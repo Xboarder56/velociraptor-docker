@@ -9,9 +9,11 @@ ARG BUILD_DATE
 ARG BASE_IMAGE
 
 LABEL org.opencontainers.image.title="Velociraptor"
-LABEL org.opencontainers.image.version="${VELOX_VERSION}"
 LABEL org.opencontainers.image.description="Velociraptor server in a Docker container"
 LABEL org.opencontainers.image.source="https://github.com/Xboarder56/velociraptor-docker"
+LABEL org.opencontainers.image.version="${VELOX_VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
 LABEL org.opencontainers.image.base="${BASE_IMAGE}"
 
 ENV DEBIAN_FRONTEND=noninteractive \
