@@ -1,0 +1,32 @@
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Docker build artifacts
+*.bak
+*.tmp
+*.log
+*.swp
+*.old
+*.yaml.bak*
+tmp/
+build/
+dist/
+*.tar
+*.gz
+
+# Local environment
+.env.*
+docker-compose.override.yml
+
+# Any local Velociraptor runtime data or certs
+config/
+pki/
+*.pem
+*.key
+*.crt
+
+# Ignore Docker Desktop’s extra metadata
+.dockerignore
+.docker/
