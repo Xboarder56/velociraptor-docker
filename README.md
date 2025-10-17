@@ -14,6 +14,24 @@ Run [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) server w
   
   `docker exec -it velociraptor ./velociraptor --config server.config.yaml user add user1 user1 --role administrator`
 
+### 🏗️ Building from Source
+
+To build the image locally using this fork:
+
+```bash
+git clone https://github.com/Xboarder56/velociraptor-docker.git
+cd velociraptor-docker
+docker build -t xboarder56/velociraptor:latest .
+```
+
+You can also specify a particular version at build time:
+
+```bash
+docker build --build-arg VELOCIRAPTOR_VERSION=0.75.2 -t xboarder56/velociraptor:0.75.2 .
+```
+
+This allows you to rebuild images from specific Velociraptor versions while maintaining compatibility with your local configurations or custom base images.
+
 #### Notes:
 
 Linux, Mac, and Windows binaries are located in `/velociraptor/clients`, which should be mapped to the host in the `./velociraptor` directory if using `docker-compose`.  There should also be versions of each automatically repacked based on the server configuration.
@@ -23,8 +41,22 @@ Once started, edit `server.config.yaml` in `/velociraptor`, then run `docker-com
 #### Docker image
 To pull only the Docker image:
 
-`docker pull wlambert/velociraptor`
+`docker pull xboarder56/velociraptor`
 
 To pull a specific version of the Docker image:
 
-`docker pull wlambert/velociraptor:0.73.4`
+`docker pull xboarder56/velociraptor:0.75.1`
+
+---
+
+### 🧩 About This Fork
+
+This repository is a fork of [weslambert/velociraptor-docker](https://github.com/weslambert/velociraptor-docker), originally created by **Wes Lambert**.  
+It aims to maintain compatibility with the latest [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) releases while providing additional configuration options and deployment improvements for Docker environments.
+
+All credit for the foundational work goes to Wes Lambert — this fork primarily adds quality-of-life enhancements, updated configurations, and maintenance updates.
+
+---
+
+**Maintained by:** [Xboarder56](https://github.com/Xboarder56)  
+**Upstream project:** [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor)

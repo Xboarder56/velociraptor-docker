@@ -1,8 +1,8 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 ARG VELOX_VERSION
 LABEL version="Velociraptor $VELOX_VERSION"
 LABEL description="Velociraptor server in a Docker container"
-LABEL maintainer="Wes Lambert, @therealwlambert"
+LABEL maintainer="Xboarder56"
 COPY ./entrypoint .
 RUN chmod +x entrypoint && \
     apt-get update && \
