@@ -5,8 +5,8 @@ echo "Starting Velociraptor entrypoint..."
 BIND_ADDRESS="0.0.0.0"
 PUBLIC_PATH="public"
 DATASTORE_LOCATION="./"
-FILESTORE_DIRECTORY="./"
-CLIENT_DIR="/velociraptor/clients"
+FILESTORE_DIRECTORY="${VELOX_FILESTORE_DIRECTORY:-./filestore}"
+CLIENT_DIR="${VELOX_CLIENT_DIR:-/velociraptor/client_bundles}"
 SERVER_SRC="/opt/velociraptor/linux/velociraptor"
 
 # Identity & auth defaults

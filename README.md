@@ -28,21 +28,23 @@ Open [**https://localhost:8889**](https://localhost:8889) (accept the self-signe
 
 These **variables are read at container start**—no image rebuilds needed.
 
-| Variable                     | Purpose                                                 | Default                       |
-| ---------------------------- | ------------------------------------------------------- | ----------------------------- |
-| `VELOX_USER`                 | Initial GUI admin username                              | `admin`                       |
-| `VELOX_PASSWORD`             | Initial GUI admin password                              | `changeme`                    |
-| `VELOX_ROLE`                 | Role for the bootstrap user                             | `administrator`               |
-| `VELOX_FRONTEND_HOSTNAME`    | Public host used in client configs (URLs)               | `localhost`                   |
-| `VELOX_SERVER_SCHEME`        | Public scheme (`https`/`http`) for client URLs          | `https`                       |
-| `VELOX_SERVER_URL`           | Override full client URL (e.g., `https://myhost:8000/`) | derived from scheme/host/port |
-| `VELOX_FRONTEND_PORT`        | Client/ingest port                                      | `8000`                        |
-| `VELOX_GUI_PORT`             | Web GUI port                                            | `8889`                        |
-| `VELOX_API_PORT`             | gRPC API port                                           | `8001`                        |
-| `VELOX_MONITORING_PORT`      | Metrics port                                            | `8003`                        |
-| `VELOX_START_SERVER_VERBOSE` | `true` to enable verbose (`-v`) server logs             | *(off)*                       |
-| `VELOX_LOG_DIR`              | Where component logs write inside container             | `.`                           |
-| `VELOX_DEBUG_DISABLED`       | Disable DEBUG in component logs                         | `true`                        |
+| Variable                     | Purpose                                                 | Default                         |
+| ---------------------------- | ------------------------------------------------------- | ------------------------------- |
+| `VELOX_USER`                 | Initial GUI admin username                              | `admin`                         |
+| `VELOX_PASSWORD`             | Initial GUI admin password                              | `changeme`                      |
+| `VELOX_ROLE`                 | Role for the bootstrap user                             | `administrator`                 |
+| `VELOX_FILESTORE_DIRECTORY`  | Root of Velociraptor filestore (collections, uploads)   | `/velociraptor/file_store`      |
+| `VELOX_CLIENT_DIR`           | Directory where clients are stored                      | `/velociraptor/client_bundles}` |
+| `VELOX_FRONTEND_HOSTNAME`    | Public host used in client configs (URLs)               | `localhost`                     |
+| `VELOX_SERVER_SCHEME`        | Public scheme (`https`/`http`) for client URLs          | `https`                         |
+| `VELOX_SERVER_URL`           | Override full client URL (e.g., `https://myhost:8000/`) | derived from scheme/host/port   |
+| `VELOX_FRONTEND_PORT`        | Client/ingest port                                      | `8000`                          |
+| `VELOX_GUI_PORT`             | Web GUI port                                            | `8889`                          |
+| `VELOX_API_PORT`             | gRPC API port                                           | `8001`                          |
+| `VELOX_MONITORING_PORT`      | Metrics port                                            | `8003`                          |
+| `VELOX_START_SERVER_VERBOSE` | `true` to enable verbose (`-v`) server logs             | *(off)*                         |
+| `VELOX_LOG_DIR`              | Where component logs write inside container             | `.`                             |
+| `VELOX_DEBUG_DISABLED`       | Disable DEBUG in component logs                         | `true`                          |
 
 **Persistent paths (mount a volume):**
 
