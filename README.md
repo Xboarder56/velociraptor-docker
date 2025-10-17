@@ -1,51 +1,160 @@
-# velociraptor-docker
-Run [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) server with Docker
+# Velociraptor (Server) in Docker
 
-#### Install
+Run the [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) server in a container with sensible defaults, HTTPS, and prebuilt client repacks.
 
-- Ensure [docker-compose](https://docs.docker.com/compose/install/) is installed on the host
-- `git clone https://github.com/weslambert/velociraptor-docker`
-- `cd velociraptor-docker`
-- Change credential values in `.env` as desired
-- `docker-compose up` (or `docker-compose up -d` for detached)
-- Access the Velociraptor GUI via https://\<hostip\>:8889 
-  - Default u/p is `admin/admin`
-  - This can be changed by running: 
-  
-  `docker exec -it velociraptor ./velociraptor --config server.config.yaml user add user1 user1 --role administrator`
+- **Architectures:** `linux/amd64`, `linux/arm64`
+- **Ports:** `8000` (client/ingest), `8889` (GUI), `8001` (gRPC API), `8003` (Prometheus)
+- **Data dir:** mount `/velociraptor` to persist config, keys, artifacts, and repacked clients
+- **TLS:** self-signed cert generated on first run (you can rotate later)
 
-### 🏗️ Building from Source
+On start, the container prints a small build banner (version, arch, base image, git commit, build date) so you can confirm what you pulled.
 
-To build the image locally using this fork:
+---
+
+## Quick Start
 
 ```bash
-git clone https://github.com/Xboarder56/velociraptor-docker.git
-cd velociraptor-docker
-docker build -t xboarder56/velociraptor:latest .
+docker run -it --rm \
+  -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
+  -v $PWD/velodata:/velociraptor \
+  xboarder56/velociraptor:latest
 ```
 
-You can also specify a particular version at build time:
+Open [**https://localhost:8889**](https://localhost:8889) (accept the self-signed cert) and log in with the bootstrap credentials below (you should change them right away).
+
+---
+
+## Runtime Configuration (Environment Variables)
+
+These **variables are read at container start**—no image rebuilds needed.
+
+| Variable                     | Purpose                                                 | Default                       |
+| ---------------------------- | ------------------------------------------------------- | ----------------------------- |
+| `VELOX_USER`                 | Initial GUI admin username                              | `admin`                       |
+| `VELOX_PASSWORD`             | Initial GUI admin password                              | `changeme`                    |
+| `VELOX_ROLE`                 | Role for the bootstrap user                             | `administrator`               |
+| `VELOX_FRONTEND_HOSTNAME`    | Public host used in client configs (URLs)               | `localhost`                   |
+| `VELOX_SERVER_SCHEME`        | Public scheme (`https`/`http`) for client URLs          | `https`                       |
+| `VELOX_SERVER_URL`           | Override full client URL (e.g., `https://myhost:8000/`) | derived from scheme/host/port |
+| `VELOX_FRONTEND_PORT`        | Client/ingest port                                      | `8000`                        |
+| `VELOX_GUI_PORT`             | Web GUI port                                            | `8889`                        |
+| `VELOX_API_PORT`             | gRPC API port                                           | `8001`                        |
+| `VELOX_MONITORING_PORT`      | Metrics port                                            | `8003`                        |
+| `VELOX_START_SERVER_VERBOSE` | `true` to enable verbose (`-v`) server logs             | *(off)*                       |
+| `VELOX_LOG_DIR`              | Where component logs write inside container             | `.`                           |
+| `VELOX_DEBUG_DISABLED`       | Disable DEBUG in component logs                         | `true`                        |
+
+**Persistent paths (mount a volume):**
+
+- `/velociraptor/server.config.yaml` — server config (auto-generated)
+- `/velociraptor/client.config.yaml` — client config
+- `/velociraptor/clients/` — repacked client binaries (.deb/.rpm/.exe/.msi)
+
+---
+
+## Common Run Examples
+
+### 1) Quiet (INFO) mode
 
 ```bash
-docker build --build-arg VELOCIRAPTOR_VERSION=0.75.2 -t xboarder56/velociraptor:0.75.2 .
+docker run -it --rm \
+  -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
+  -v $PWD/velodata:/velociraptor \
+  -e VELOX_USER=admin -e VELOX_PASSWORD='S3cure!' \
+  xboarder56/velociraptor:latest
 ```
 
-This allows you to rebuild images from specific Velociraptor versions while maintaining compatibility with your local configurations or custom base images.
+### 2) Enable DEBUG logs on stdout
 
-#### Notes:
+```bash
+docker run -it --rm \
+  -e VELOX_VERBOSE=true \
+  -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
+  -v $PWD/velodata:/velociraptor \
+  xboarder56/velociraptor:latest
+```
 
-Linux, Mac, and Windows binaries are located in `/velociraptor/clients`, which should be mapped to the host in the `./velociraptor` directory if using `docker-compose`.  There should also be versions of each automatically repacked based on the server configuration.
+### 3) Set the public URL clients should use
 
-Once started, edit `server.config.yaml` in `/velociraptor`, then run `docker-compose down/up` for the server to reflect the changes
+```bash
+docker run -it --rm \
+  -e VELOX_FRONTEND_HOSTNAME=velociraptor.example.com \
+  -e VELOX_FRONTEND_PORT=443 \
+  -e VELOX_SERVER_SCHEME=https \
+  -p 443:8000 -p 8889:8889 \
+  -v $PWD/velodata:/velociraptor \
+  xboarder56/velociraptor:latest
+```
 
-#### Docker image
-To pull only the Docker image:
+---
 
-`docker pull xboarder56/velociraptor`
+## Docker Compose
 
-To pull a specific version of the Docker image:
+```yaml
+services:
+  velociraptor:
+    image: xboarder56/velociraptor:latest
+    restart: unless-stopped
+    environment:
+      VELOX_USER: admin
+      VELOX_PASSWORD: "S3cure!"
+      VELOX_FRONTEND_HOSTNAME: velociraptor.example.com
+      VELOX_SERVER_SCHEME: https
+      VELOX_VERBOSE: "false"
+    ports:
+      - "8000:8000"   # client/ingest
+      - "8889:8889"   # GUI
+      - "8001:8001"   # gRPC API
+      - "8003:8003"   # Metrics
+    volumes:
+      - ./velodata:/velociraptor
+```
 
-`docker pull xboarder56/velociraptor:0.75.1`
+---
+
+## What to Expect on First Run
+
+- The entrypoint generates a secure **server.config.yaml** and a **client.config.yaml**.
+- Clients for Linux (amd64 + arm64), macOS (amd64 + arm64), and Windows (exe + msi) are **repacked** into `/velociraptor/clients/` with your server URL.
+- You’ll see logs like:
+  - `GUI is ready to handle TLS requests on https://localhost:8889/`
+  - `Frontend is ready to handle client TLS requests at https://localhost:8000/`
+
+---
+
+## Client Binaries
+
+After startup, check `./velodata/clients/` for repacked binaries:
+
+- **Linux:** `.deb` and `.rpm` packages for amd64 and arm64
+- **macOS:** repacked executables for amd64 and arm64
+- **Windows:** `.exe` and `.msi`
+
+If a specific upstream client binary isn’t available, the repack step is skipped (you’ll see a log message).
+
+---
+
+## Security Notes
+
+- **Change the default credentials** via `VELOX_USER` / `VELOX_PASSWORD` on first run.
+- TLS is **self-signed** by default; rotate keys/certificates as needed from the server.
+- Expose GUI/API only where appropriate; consider a reverse proxy or firewall rules.
+
+---
+
+## Troubleshooting
+
+- Seeing `[DEBUG] FlowStorageManager housekeeping run`?\
+  You likely set `VELOX_START_SERVER_VERBOSE=true` (adds `-v`). Remove it to suppress DEBUG.
+- Ports already in use? Map them as needed: `-p 443:8000` and set `VELOX_FRONTEND_PORT=443`.
+
+---
+
+## Tags
+
+- `:latest` — current release
+- `:<version>` — pinned image matching the bundled Velociraptor release (e.g., `0.75.3`)
+- Multi-arch manifests are published for **amd64** and **arm64**
 
 ---
 
