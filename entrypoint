@@ -2,38 +2,52 @@
 set -e
 echo "Starting Velociraptor entrypoint..."
 
-BIND_ADDRESS="0.0.0.0"
+# File System Configuratio
 PUBLIC_PATH="public"
 DATASTORE_LOCATION="./"
 FILESTORE_DIRECTORY="${VELOX_FILESTORE_DIRECTORY:-./filestore}"
 CLIENT_DIR="${VELOX_CLIENT_DIR:-/velociraptor/client_bundles}"
 SERVER_SRC="/opt/velociraptor/linux/velociraptor"
+STATE_HASH_DIR="${CLIENT_DIR}/.refhash"
 
-# Identity & auth defaults
-VELOX_FRONTEND_HOSTNAME="${VELOX_FRONTEND_HOSTNAME:-localhost}"
-VELOX_USER="${VELOX_USER:-admin}"
-VELOX_PASSWORD="${VELOX_PASSWORD:-changeme}"
-VELOX_ROLE="${VELOX_ROLE:-administrator}"
+# Identity & auth
+VELOX_FRONTEND_HOSTNAME="${VELOX_FRONTEND_HOSTNAME}"
+VELOX_DEFAULT_USER="${VELOX_DEFAULT_USER:-admin}"
+VELOX_DEFAULT_PASSWORD="${VELOX_DEFAULT_PASSWORD:-changeme}"
+VELOX_DEFAULT_USER_ROLE="${VELOX_DEFAULT_USER_ROLE:-administrator}"
 
-# Port configuration defaults
-VELOX_FRONTEND_PORT="${VELOX_FRONTEND_PORT:-8000}"     # client/ingest + public frontend
-VELOX_GUI_PORT="${VELOX_GUI_PORT:-8889}"               # web admin GUI
-VELOX_API_PORT="${VELOX_API_PORT:-8001}"               # API
-VELOX_MONITORING_PORT="${VELOX_MONITORING_PORT:-8003}" # Monitoring
+# Network Configuration
+BIND_ADDRESS="0.0.0.0"
+VELOX_FRONTEND_PORT="${VELOX_FRONTEND_PORT}"     # client/ingest + public frontend
+VELOX_GUI_PORT="${VELOX_GUI_PORT}"               # web admin GUI
+VELOX_API_PORT="${VELOX_API_PORT}"               # API
+VELOX_MONITORING_PORT="${VELOX_MONITORING_PORT}" # Monitoring
+VELOX_SERVER_SCHEME="${VELOX_SERVER_SCHEME}"
 
-# Scheme + URL (derive AFTER ports/hostname)
-VELOX_SERVER_SCHEME="${VELOX_SERVER_SCHEME:-https}"
-# If VELOX_SERVER_URL isn't explicitly provided, construct it from scheme/host/port
-VELOX_SERVER_URL="${VELOX_SERVER_URL:-${VELOX_SERVER_SCHEME}://${VELOX_FRONTEND_HOSTNAME}:${VELOX_FRONTEND_PORT}/}"
-
-# Logging defaults
-VELOX_LOG_DIR="${VELOX_LOG_DIR:-.}"
-VELOX_DEBUG_DISABLED="${VELOX_DEBUG_DISABLED:-true}"
+# Logging
+VELOX_LOG_DIR="${VELOX_LOG_DIR}"
+VELOX_DEBUG_DISABLED="${VELOX_DEBUG_DISABLED}"
+# NOTE: 'true' here enables -v by default. Set to 'false' to run quiet by default.
 VELOX_START_SERVER_VERBOSE="${VELOX_START_SERVER_VERBOSE:-true}"
 
 # Build metadata (injected at build time)
 VELOX_VERSION="${VELOX_VERSION:-unknown}"
 TARGETARCH="${TARGETARCH:-$(uname -m)}"
+
+# Helper functions for hash state
+read_sha() {
+  # Print first field if file exists/non-empty; else print nothing and exit 0
+  if [ -s "$1" ]; then
+    awk '{print $1; exit}' "$1"
+  else
+    echo -n ""
+  fi
+  return 0
+}
+write_state_sha() { mkdir -p "$STATE_HASH_DIR"; printf "%s" "$2" > "${STATE_HASH_DIR}/$1.sha256"; }
+get_state_sha() { read_sha "${STATE_HASH_DIR}/$1.sha256"; }
+
+mkdir -p "$CLIENT_DIR" "$FILESTORE_DIRECTORY" "$STATE_HASH_DIR"
 
 echo "============================================"
 echo " Velociraptor Docker Build Info"
@@ -46,13 +60,12 @@ echo " Base Image:       ${BASE_IMAGE:-unknown}"
 echo "============================================"
 
 # Verify required tools
-for cmd in jq openssl; do
+for cmd in jq yq sed openssl sha256sum; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Required command '$cmd' not found. Please verify your base image includes it."
     exit 1
   fi
 done
-
 
 # Move server binary into place
 if [ -s "$SERVER_SRC" ]; then
@@ -63,32 +76,39 @@ else
 fi
 
 # Generate server config if missing
-# Generate server config if missing
 if [ ! -f server.config.yaml ]; then
   echo "Generating initial server config..."
+
+  if [ -z "$VELOX_SERVER_URL" ]; then
+    scheme="${VELOX_SERVER_SCHEME:-https}"
+    host="${VELOX_FRONTEND_HOSTNAME:-localhost}"
+    port="${VELOX_FRONTEND_PORT:-8000}"
+    VELOX_SERVER_URL="${scheme}://${host}:${port}/"
+  fi
+
   ./velociraptor config generate --merge '{
     "Frontend":{
       "public_path":"'"$PUBLIC_PATH"'",
-      "hostname":"'"$VELOX_FRONTEND_HOSTNAME"'",
+      "hostname":"'"${VELOX_FRONTEND_HOSTNAME:-localhost}"'",
       "bind_address":"'"$BIND_ADDRESS"'",
-      "bind_port":'"$VELOX_FRONTEND_PORT"'
+      "bind_port":'"${VELOX_FRONTEND_PORT:-8000}"'
     },
     "API":{
       "bind_address":"'"$BIND_ADDRESS"'",
-      "bind_port":'"$VELOX_API_PORT"'
+      "bind_port":'"${VELOX_API_PORT:-8001}"'
     },
     "GUI":{
       "bind_address":"'"$BIND_ADDRESS"'",
-      "bind_port":'"$VELOX_GUI_PORT"'
+      "bind_port":'"${VELOX_GUI_PORT:-8889}"'
     },
     "Monitoring":{
       "bind_address":"'"$BIND_ADDRESS"'",
-      "bind_port":'"$VELOX_MONITORING_PORT"'
+      "bind_port":'"${VELOX_MONITORING_PORT:-8003}"'
     },
     "Logging":{
-      "output_directory":"'"$VELOX_LOG_DIR"'",
+      "output_directory":"'"${VELOX_LOG_DIR:-.}"'",
       "separate_logs_per_component":true,
-      "debug":{"disabled":'"$VELOX_DEBUG_DISABLED"'}
+      "debug":{"disabled":'"${VELOX_DEBUG_DISABLED:-true}"'}
     },
     "Client":{
       "server_urls":["'"$VELOX_SERVER_URL"'"],
@@ -103,13 +123,93 @@ if [ ! -f server.config.yaml ]; then
   # Fix temp path references
   sed -i 's#/tmp/velociraptor#.#g' server.config.yaml
 
-  echo "Creating default user '${VELOX_USER}'..."
-  ./velociraptor --config server.config.yaml user add "$VELOX_USER" "$VELOX_PASSWORD" --role "$VELOX_ROLE"
+  echo "Creating default user '${VELOX_DEFAULT_USER}'..."
+  ./velociraptor --config server.config.yaml user add "$VELOX_DEFAULT_USER" "$VELOX_DEFAULT_PASSWORD" --role "$VELOX_DEFAULT_USER_ROLE"
 fi
 
-# Rotate cert if expiring
-CERT_PATH=$(./velociraptor --config server.config.yaml config show --json | jq -r .Frontend.certificate)
-if [ -n "$CERT_PATH" ] && echo "$CERT_PATH" | openssl x509 -noout -checkend 86400 >/dev/null 2>&1; then
+# Update existing server config from ENV vars
+if [ -f server.config.yaml ]; then
+  echo "Existing config found. Checking for updates from environment variables..."
+  
+  CONFIG_UPDATED=false
+
+  # Helper function for updating a key if the value has changed
+  update_config_key() {
+    local key_path="$1"
+    local new_value="$2"
+    local is_string="$3"
+    
+    # Skip the update if the environment variable is empty or unset.
+    if [ -z "$new_value" ]; then
+      return
+    fi
+
+    # Read the current raw value from the YAML file (-r)
+    local current_value
+    current_value=$(yq -r "$key_path" server.config.yaml)
+    
+    # Compare and update if different
+    if [ "$current_value" != "$new_value" ]; then
+      echo "  - Updating '$key_path': '$current_value' -> '$new_value'"
+      if [ "$is_string" = "true" ]; then
+        yq -i -y "$key_path = \"$new_value\"" server.config.yaml
+      else
+        yq -i -y "$key_path = $new_value" server.config.yaml
+      fi
+      CONFIG_UPDATED=true
+    fi
+  }
+
+  # String values
+  update_config_key '.Frontend.hostname' "$VELOX_FRONTEND_HOSTNAME" true
+  update_config_key '.Logging.output_directory' "$VELOX_LOG_DIR" true
+  
+  # Numeric or Boolean values (not quoted)
+  update_config_key '.Frontend.bind_port' "$VELOX_FRONTEND_PORT" false
+  update_config_key '.GUI.bind_port' "$VELOX_GUI_PORT" false
+  update_config_key '.API.bind_port' "$VELOX_API_PORT" false
+  update_config_key '.Monitoring.bind_port' "$VELOX_MONITORING_PORT" false
+  update_config_key '.Logging.debug.disabled' "$VELOX_DEBUG_DISABLED" false
+
+  # Update Server URL
+  if [ -n "$VELOX_SERVER_URL" ]; then
+    # a) User provided an explicit URL
+    echo " - User provided explicit VELOX_SERVER_URL."
+    update_config_key '(.Client.server_urls[0])' "$VELOX_SERVER_URL" true
+  else
+    # b) User did NOT provide an explicit URL
+    current_url=$(yq -r '(.Client.server_urls[0])' server.config.yaml)
+    current_scheme=$(echo "$current_url" | grep -o '^[a-zA-Z]*')
+    current_host=$(echo "$current_url" | sed -E 's|^[a-zA-Z]+://([^/:]+).*|\1|')
+    current_port=$(echo "$current_url" | sed -E 's|^[a-zA-Z]+://[^/:]+:([0-9]+).*|\1|')
+
+    # Handle case where port is not explicitly in URL (e.g. https://domain.com/)
+    if [[ "$current_port" == *":"* ]] || [[ "$current_port" == *"/"* ]] || [ -z "$current_port" ]; then
+        if [ "$current_scheme" = "https" ]; then
+            current_port="443"
+        else
+            current_port="80"
+        fi
+    fi
+
+    # Decide which component values to use: ENV var if set, otherwise CURRENT parsed value
+    scheme="${VELOX_SERVER_SCHEME:-$current_scheme}"
+    host="${VELOX_FRONTEND_HOSTNAME:-$current_host}"
+    port="${VELOX_FRONTEND_PORT:-$current_port}"
+
+
+    # Build the new URL and update the config with it.
+    new_url="${scheme}://${host}:${port}/"
+    update_config_key '(.Client.server_urls[0])' "$new_url" true
+  fi
+
+  if [ "$CONFIG_UPDATED" = "false" ]; then
+    echo " - Configuration is already up-to-date."
+  fi
+fi
+
+# Rotate Expired Cert
+if true | ./velociraptor --config server.config.yaml config show --json | jq -r .Frontend.certificate | openssl x509 -text -enddate -noout -checkend 86400 >/dev/null; then
   echo "Certificate valid, skipping renewal."
 else
   echo "Rotating expiring certificate..."
@@ -118,65 +218,131 @@ else
   mv /tmp/server.config.yaml server.config.yaml
 fi
 
-# Generate client config and repack clients BEFORE starting frontend
-echo "Generating client config and repacking clients..."
+# Generate client config & decide whether to repack
+echo "Assessing whether client repack is required..."
 mkdir -p "$CLIENT_DIR"/{linux,mac,windows}
 ./velociraptor --config server.config.yaml config client > client.config.yaml
 
+NEED_REPACK=false
 
-# Linux clients (amd64 + arm64)
-for arch in amd64 arm64; do
-  BIN="/opt/velociraptor/linux/velociraptor_client_${arch}"
-  OUT_BASE="$CLIENT_DIR/linux/velociraptor_client_${arch}_repacked"
-  if [ -s "$BIN" ]; then
-    echo "  • Repacking Linux client ($arch)"
-    ./velociraptor config repack --exe "$BIN" client.config.yaml "$OUT_BASE"
+# A) Detect client config changes
+NEW_CFG_SHA=$(sha256sum client.config.yaml | awk '{print $1}')
+OLD_CFG_SHA=$(get_state_sha client.config)
 
-    # Build .deb and .rpm packages for this architecture
-    echo "  • Building Linux ($arch) .deb and .rpm packages..."
-    ./velociraptor --config client.config.yaml debian client --output "${OUT_BASE}.deb" || echo "    Failed to build .deb for $arch"
-    ./velociraptor --config client.config.yaml rpm client --output "${OUT_BASE}.rpm" || echo "    Failed to build .rpm for $arch"
-  else
-    echo "  • Missing Linux client ($arch), skipping"
-  fi
-done
-
-
-# macOS clients (amd64 + arm64)
-for arch in amd64 arm64; do
-  BIN="/opt/velociraptor/mac/velociraptor_client_${arch}"
-  OUT="$CLIENT_DIR/mac/velociraptor_client_${arch}_repacked"
-  if [ -s "$BIN" ]; then
-    echo "  • Repacking macOS client ($arch)"
-    ./velociraptor config repack --exe "$BIN" client.config.yaml "$OUT"
-  else
-    echo "  • Missing macOS client ($arch), skipping"
-  fi
-done
-
-# Windows clients
-if [ -s /opt/velociraptor/windows/velociraptor_client.exe ]; then
-  echo "  • Repacking Windows EXE client"
-  ./velociraptor config repack --exe /opt/velociraptor/windows/velociraptor_client.exe \
-    client.config.yaml "$CLIENT_DIR/windows/velociraptor_client_repacked.exe"
-fi
-if [ -s /opt/velociraptor/windows/velociraptor_client.msi ]; then
-  echo "  • Repacking Windows MSI client"
-  ./velociraptor config repack --msi /opt/velociraptor/windows/velociraptor_client.msi \
-    client.config.yaml "$CLIENT_DIR/windows/velociraptor_client_repacked.msi"
+if [ "${NEW_CFG_SHA:-x}" != "${OLD_CFG_SHA:-y}" ]; then
+  echo " - Client config changed (or first run)."
+  NEED_REPACK=true
 fi
 
-echo "Client repack complete."
+# B) Detect baked client binary changes (checksums baked next to binaries via Dockerfile)
+check_bin() {
+  local label="$1" bin_path="$2" sum_path="${2}.sha256"
+  if [ -s "$bin_path" ] && [ -s "$sum_path" ]; then
+    local new_sha old_sha
+    new_sha=$(read_sha "$sum_path")
+    old_sha=$(get_state_sha "$label")
+    if [ "${new_sha:-x}" != "${old_sha:-y}" ]; then
+      echo " - Binary changed: $label"
+      NEED_REPACK=true
+    fi
+  fi
+}
+
+# Linux (amd64/arm64)
+for arch in amd64 arm64; do
+  check_bin "linux_${arch}_bin" "/opt/velociraptor/linux/velociraptor_client_${arch}"
+done
+# macOS (amd64/arm64)
+for arch in amd64 arm64; do
+  check_bin "mac_${arch}_bin" "/opt/velociraptor/mac/velociraptor_client_${arch}"
+done
+# Windows (exe/msi)
+check_bin "windows_exe_bin" "/opt/velociraptor/windows/velociraptor_client.exe"
+check_bin "windows_msi_bin" "/opt/velociraptor/windows/velociraptor_client.msi"
+
+# C) First-run detection (no repacked outputs exist)
+if [ -z "$(ls -A "$CLIENT_DIR/linux" 2>/dev/null || true)" ] || \
+   [ -z "$(ls -A "$CLIENT_DIR/mac" 2>/dev/null || true)" ] || \
+   [ -z "$(ls -A "$CLIENT_DIR/windows" 2>/dev/null || true)" ]; then
+  echo " - No repacked artifacts found -> first run."
+  NEED_REPACK=true
+fi
+
+# Conditional repack
+if [ "$NEED_REPACK" = true ]; then
+  echo "Generating client config and repacking clients..."
+
+  # Linux clients (amd64 + arm64)
+  for arch in amd64 arm64; do
+    BIN="/opt/velociraptor/linux/velociraptor_client_${arch}"
+    OUT_BASE="$CLIENT_DIR/linux/velociraptor_client_${arch}_repacked"
+    if [ -s "$BIN" ]; then
+      echo "  • Repacking Linux client ($arch)"
+      ./velociraptor config repack --exe "$BIN" client.config.yaml "$OUT_BASE"
+
+      # Build .deb and .rpm packages for this architecture
+      echo "  • Building Linux ($arch) .deb and .rpm packages..."
+      ./velociraptor --config client.config.yaml debian client --output "${OUT_BASE}.deb" || echo "    Failed to build .deb for $arch"
+      ./velociraptor --config client.config.yaml rpm client --output "${OUT_BASE}.rpm" || echo "    Failed to build .rpm for $arch"
+    else
+      echo "  • Missing Linux client ($arch), skipping"
+    fi
+  done
+
+  # macOS clients (amd64 + arm64)
+  for arch in amd64 arm64; do
+    BIN="/opt/velociraptor/mac/velociraptor_client_${arch}"
+    OUT="$CLIENT_DIR/mac/velociraptor_client_${arch}_repacked"
+    if [ -s "$BIN" ]; then
+      echo "  • Repacking macOS client ($arch)"
+      ./velociraptor config repack --exe "$BIN" client.config.yaml "$OUT"
+    else
+      echo "  • Missing macOS client ($arch), skipping"
+    fi
+  done
+
+  # Windows clients
+  if [ -s /opt/velociraptor/windows/velociraptor_client.exe ]; then
+    echo "  • Repacking Windows EXE client"
+    ./velociraptor config repack --exe /opt/velociraptor/windows/velociraptor_client.exe \
+      client.config.yaml "$CLIENT_DIR/windows/velociraptor_client_repacked.exe"
+  fi
+  if [ -s /opt/velociraptor/windows/velociraptor_client.msi ]; then
+    echo "  • Repacking Windows MSI client"
+    ./velociraptor config repack --msi /opt/velociraptor/windows/velociraptor_client.msi \
+      client.config.yaml "$CLIENT_DIR/windows/velociraptor_client_repacked.msi"
+  fi
+
+  echo "Client repack complete. Persisting state hashes..."
+  # Persist config hash
+  write_state_sha client.config "$NEW_CFG_SHA"
+  # Persist binary hashes
+  for arch in amd64 arm64; do
+    for os in linux mac; do
+      HASH_FILE="/opt/velociraptor/${os}/velociraptor_client_${arch}.sha256"
+      if [ -s "$HASH_FILE" ]; then
+        write_state_sha "${os}_${arch}_bin" "$(read_sha "$HASH_FILE")"
+      fi
+    done
+  done
+  for kind in exe msi; do
+    HASH_FILE="/opt/velociraptor/windows/velociraptor_client.${kind}.sha256"
+    if [ -s "$HASH_FILE" ]; then
+      write_state_sha "windows_${kind}_bin" "$(read_sha "$HASH_FILE")"
+    fi
+  done
+else
+  echo "No changes detected — skipping client repack."
+fi
 
 # Start Velociraptor Server
 echo "Velociraptor starting..."
 echo "============================================"
 echo " Velociraptor Configuration"
 echo "--------------------------------------------"
-echo " Hostname:           ${VELOX_FRONTEND_HOSTNAME}"
 echo " Server URL:         ${VELOX_SERVER_URL}"
-echo " Default User:       ${VELOX_USER}"
-echo " Role:               ${VELOX_ROLE}"
+echo " Default User:       ${VELOX_DEFAULT_USER}"
+echo " Role:               ${VELOX_DEFAULT_ROLE}"
 echo " Client Dir:         ${CLIENT_DIR}"
 echo " DataStore Dir:      ${DATASTORE_LOCATION}"
 echo " FileStore Dir:      ${FILESTORE_DIRECTORY}"

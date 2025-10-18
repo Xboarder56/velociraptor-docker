@@ -26,7 +26,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 COPY ./entrypoint /entrypoint
 RUN chmod +x /entrypoint && \
     apt-get update && \
-    apt-get install -y --no-install-recommends curl jq rsync ca-certificates && \
+    apt-get install -y --no-install-recommends curl jq yq sed ca-certificates coreutils mawk && \
     mkdir -p /opt/velociraptor/linux /opt/velociraptor/mac /opt/velociraptor/windows && \
     rm -rf /var/lib/apt/lists/*
 
@@ -56,6 +56,22 @@ RUN set -eux; \
     curl -fL "$WINDOWS_EXE" -o /opt/velociraptor/windows/velociraptor_client.exe || true; \
     curl -fL "$WINDOWS_MSI" -o /opt/velociraptor/windows/velociraptor_client.msi || true; \
     echo "All binaries downloaded successfully."
+
+# Bake checksums next to each present binary
+RUN set -eux; \
+  for f in \
+    /opt/velociraptor/linux/velociraptor \
+    /opt/velociraptor/linux/velociraptor_client_amd64 \
+    /opt/velociraptor/linux/velociraptor_client_arm64 \
+    /opt/velociraptor/mac/velociraptor_client_amd64 \
+    /opt/velociraptor/mac/velociraptor_client_arm64 \
+    /opt/velociraptor/windows/velociraptor_client.exe \
+    /opt/velociraptor/windows/velociraptor_client.msi \
+  ; do \
+    if [ -s "$f" ]; then \
+      sha256sum "$f" | awk '{print $1}' > "${f}.sha256"; \
+    fi; \
+  done
 
 WORKDIR /velociraptor
 ENTRYPOINT ["/entrypoint"]

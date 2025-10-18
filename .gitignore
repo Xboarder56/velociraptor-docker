@@ -19,6 +19,8 @@ dist/
 # Local environment
 .env.*
 docker-compose.override.yml
+velo/*
+fakehash.sha256
 
 # Any local Velociraptor runtime data or certs
 config/

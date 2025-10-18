@@ -30,9 +30,9 @@ These **variables are read at container start**—no image rebuilds needed.
 
 | Variable                     | Purpose                                                 | Default                         |
 | ---------------------------- | ------------------------------------------------------- | ------------------------------- |
-| `VELOX_USER`                 | Initial GUI admin username                              | `admin`                         |
-| `VELOX_PASSWORD`             | Initial GUI admin password                              | `changeme`                      |
-| `VELOX_ROLE`                 | Role for the bootstrap user                             | `administrator`                 |
+| `VELOX_DEFAULT_USER`         | Initial GUI admin username                              | `admin`                         |
+| `VELOX_DEFAULT_PASSWORD`     | Initial GUI admin password                              | `changeme`                      |
+| `VELOX_DEFAULT_USER_ROLE`    | Role for the bootstrap user                             | `administrator`                 |
 | `VELOX_FILESTORE_DIRECTORY`  | Root of Velociraptor filestore (collections, uploads)   | `/velociraptor/file_store`      |
 | `VELOX_CLIENT_DIR`           | Directory where clients are stored                      | `/velociraptor/client_bundles}` |
 | `VELOX_FRONTEND_HOSTNAME`    | Public host used in client configs (URLs)               | `localhost`                     |
@@ -50,33 +50,26 @@ These **variables are read at container start**—no image rebuilds needed.
 
 - `/velociraptor/server.config.yaml` — server config (auto-generated)
 - `/velociraptor/client.config.yaml` — client config
-- `/velociraptor/clients/` — repacked client binaries (.deb/.rpm/.exe/.msi)
+- `/velociraptor/client_bundles/` — repacked client binaries (.deb/.rpm/.exe/.msi)
 
 ---
 
 ## Common Run Examples
 
-### 1) Quiet (INFO) mode
+### 1) Run quietly (INFO mode)
+
+This overrides the default, which is to run with verbose (DEBUG) logs.
 
 ```bash
 docker run -it --rm \
   -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
   -v $PWD/velodata:/velociraptor \
-  -e VELOX_USER=admin -e VELOX_PASSWORD='S3cure!' \
+  -e VELOX_DEFAULT_USER=admin -e VELOX_DEFAULT_PASSWORD='S3cure!' \
+  -e VELOX_START_SERVER_VERBOSE=false \
   xboarder56/velociraptor:latest
 ```
 
-### 2) Enable DEBUG logs on stdout
-
-```bash
-docker run -it --rm \
-  -e VELOX_VERBOSE=true \
-  -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
-  -v $PWD/velodata:/velociraptor \
-  xboarder56/velociraptor:latest
-```
-
-### 3) Set the public URL clients should use
+### 2) Set the public URL clients should use
 
 ```bash
 docker run -it --rm \
@@ -98,11 +91,11 @@ services:
     image: xboarder56/velociraptor:latest
     restart: unless-stopped
     environment:
-      VELOX_USER: admin
-      VELOX_PASSWORD: "S3cure!"
+      VELOX_DEFAULT_USER: admin
+      VELOX_DEFAULT_PASSWORD: "S3cure!"
       VELOX_FRONTEND_HOSTNAME: velociraptor.example.com
       VELOX_SERVER_SCHEME: https
-      VELOX_VERBOSE: "false"
+      VELOX_START_SERVER_VERBOSE: "false"
     ports:
       - "8000:8000"   # client/ingest
       - "8889:8889"   # GUI
@@ -117,7 +110,7 @@ services:
 ## What to Expect on First Run
 
 - The entrypoint generates a secure **server.config.yaml** and a **client.config.yaml**.
-- Clients for Linux (amd64 + arm64), macOS (amd64 + arm64), and Windows (exe + msi) are **repacked** into `/velociraptor/clients/` with your server URL.
+- Clients for Linux (amd64 + arm64), macOS (amd64 + arm64), and Windows (exe + msi) are **repacked** into `/velociraptor/client_bundles/` with your server URL.
 - You’ll see logs like:
   - `GUI is ready to handle TLS requests on https://localhost:8889/`
   - `Frontend is ready to handle client TLS requests at https://localhost:8000/`
@@ -126,7 +119,7 @@ services:
 
 ## Client Binaries
 
-After startup, check `./velodata/clients/` for repacked binaries:
+After startup, check `./velodata/client_bundles/` for repacked binaries:
 
 - **Linux:** `.deb` and `.rpm` packages for amd64 and arm64
 - **macOS:** repacked executables for amd64 and arm64
