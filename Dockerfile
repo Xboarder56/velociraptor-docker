@@ -26,7 +26,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 COPY ./entrypoint /entrypoint
 RUN chmod +x /entrypoint && \
     apt-get update && \
-    apt-get install -y --no-install-recommends curl jq yq sed ca-certificates coreutils mawk && \
+    apt-get install -y --no-install-recommends curl jq yq sed ca-certificates coreutils mawk dpkg-dev rpm && \
     mkdir -p /opt/velociraptor/linux /opt/velociraptor/mac /opt/velociraptor/windows && \
     rm -rf /var/lib/apt/lists/*
 

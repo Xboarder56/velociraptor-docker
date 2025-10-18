@@ -1,3 +1,7 @@
+**GitHub Repository:** [**github.com/Xboarder56/velociraptor-docker**](https://github.com/Xboarder56/velociraptor-docker)
+
+---
+
 # Velociraptor (Server) in Docker
 
 Run the [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) server in a container with sensible defaults, HTTPS, and prebuilt client repacks.
@@ -28,23 +32,32 @@ Open [**https://localhost:8889**](https://localhost:8889) (accept the self-signe
 
 These **variables are read at container start**—no image rebuilds needed.
 
-| Variable                     | Purpose                                                 | Default                         |
-| ---------------------------- | ------------------------------------------------------- | ------------------------------- |
-| `VELOX_DEFAULT_USER`         | Initial GUI admin username                              | `admin`                         |
-| `VELOX_DEFAULT_PASSWORD`     | Initial GUI admin password                              | `changeme`                      |
-| `VELOX_DEFAULT_USER_ROLE`    | Role for the bootstrap user                             | `administrator`                 |
-| `VELOX_FILESTORE_DIRECTORY`  | Root of Velociraptor filestore (collections, uploads)   | `/velociraptor/file_store`      |
-| `VELOX_CLIENT_DIR`           | Directory where clients are stored                      | `/velociraptor/client_bundles}` |
-| `VELOX_FRONTEND_HOSTNAME`    | Public host used in client configs (URLs)               | `localhost`                     |
-| `VELOX_SERVER_SCHEME`        | Public scheme (`https`/`http`) for client URLs          | `https`                         |
-| `VELOX_SERVER_URL`           | Override full client URL (e.g., `https://myhost:8000/`) | derived from scheme/host/port   |
-| `VELOX_FRONTEND_PORT`        | Client/ingest port                                      | `8000`                          |
-| `VELOX_GUI_PORT`             | Web GUI port                                            | `8889`                          |
-| `VELOX_API_PORT`             | gRPC API port                                           | `8001`                          |
-| `VELOX_MONITORING_PORT`      | Metrics port                                            | `8003`                          |
-| `VELOX_START_SERVER_VERBOSE` | `true` to enable verbose (`-v`) server logs             | *(off)*                         |
-| `VELOX_LOG_DIR`              | Where component logs write inside container             | `.`                             |
-| `VELOX_DEBUG_DISABLED`       | Disable DEBUG in component logs                         | `true`                          |
+| Variable                          | Purpose                                                                | Default                         |
+| --------------------------------- | ---------------------------------------------------------------------- | ------------------------------- |
+| `VELOX_DEFAULT_USER`              | Initial GUI admin username                                             | `admin`                         |
+| `VELOX_DEFAULT_PASSWORD`          | Initial GUI admin password                                             | `changeme`                      |
+| `VELOX_DEFAULT_USER_ROLE`         | Role for the bootstrap user                                            | `administrator`                 |
+| **File System**                   |                                                                        |                                 |
+| `VELOX_FILESTORE_DIRECTORY`       | Root of Velociraptor filestore (collections, uploads)                  | `/velociraptor/file_store`      |
+| `VELOX_CLIENT_DIR`                | Directory where repacked clients are stored                            | `/velociraptor/client_bundles}` |
+| **Client/Frontend Configuration** |                                                                        |                                 |
+| `VELOX_FRONTEND_HOSTNAME`         | Public hostname for clients (builds client URL)                        | `localhost`                     |
+| `VELOX_FRONTEND_PORT`             | Public-facing port for clients (builds client URL)                     | `8000`                          |
+| `VELOX_FRONTEND_SERVER_SCHEME`    | Public scheme (`https`/`http`) for client URLs                         | `https`                         |
+| `VELOX_FRONTEND_SERVER_URL`       | Full override for the client URL (e.g., `https://ingest.example.com/`) | derived from components         |
+| `VELOX_SERVER_URL` (legacy)       | Alias for `VELOX_FRONTEND_SERVER_URL`. Use new variable.               | `n/a`                           |
+| **GUI/Admin Configuration**       |                                                                        |                                 |
+| `VELOX_GUI_HOSTNAME`              | Public hostname for the admin GUI (builds GUI URL)                     | `localhost` (or client host)    |
+| `VELOX_GUI_PORT`                  | Public-facing port for the admin GUI (builds GUI URL)                  | `8889`                          |
+| `VELOX_GUI_SCHEME`                | Public scheme (`http` or `https` for GUI URL                           | `https`                         |
+| `VELOX_GUI_URL`                   | Full override for the GUI URL (e.g., `https://admin.example.com/`)     | derived from components         |
+| **Internal Ports**                |                                                                        |                                 |
+| `VELOX_API_PORT`                  | gRPC API port                                                          | `8001`                          |
+| `VELOX_MONITORING_PORT`           | Metrics port                                                           | `8003`                          |
+| **Logging**                       |                                                                        |                                 |
+| `VELOX_START_SERVER_VERBOSE`      | `true` to enable verbose (`-v`) server logs                            | *(off)*                         |
+| `VELOX_LOG_DIR`                   | Where component logs write inside container                            | `.`                             |
+| `VELOX_DEBUG_DISABLED`            | Disable DEBUG in component logs                                        | `true`                          |
 
 **Persistent paths (mount a volume):**
 
@@ -75,8 +88,19 @@ docker run -it --rm \
 docker run -it --rm \
   -e VELOX_FRONTEND_HOSTNAME=velociraptor.example.com \
   -e VELOX_FRONTEND_PORT=443 \
-  -e VELOX_SERVER_SCHEME=https \
+  -e VELOX_FRONTEND_SERVER_SCHEME=https \
   -p 443:8000 -p 8889:8889 \
+  -v $PWD/velodata:/velociraptor \
+  xboarder56/velociraptor:latest
+```
+
+### 3) Use different public URLs for Client and GUI
+
+```bash
+docker run -it --rm \
+  -e VELOX_FRONTEND_SERVER_URL=https://ingest.example.com:8000/ \
+  -e VELOX_GUI_URL=https://admin.example.com:8889/ \
+  -p 8000:8000 -p 8889:8889 \
   -v $PWD/velodata:/velociraptor \
   xboarder56/velociraptor:latest
 ```
@@ -94,7 +118,6 @@ services:
       VELOX_DEFAULT_USER: admin
       VELOX_DEFAULT_PASSWORD: "S3cure!"
       VELOX_FRONTEND_HOSTNAME: velociraptor.example.com
-      VELOX_SERVER_SCHEME: https
       VELOX_START_SERVER_VERBOSE: "false"
     ports:
       - "8000:8000"   # client/ingest
