@@ -1,23 +1,45 @@
-version: '2'
 services:
   velociraptor:
-    container_name: velociraptor
-    image: xboarder56/velociraptor
-    # build:
-    #  context: ./
-    #  dockerfile: Dockerfile
-    #  args:
-    #   VELOX_VERSION: ${VELOX_VERSION:-v0.75.1}
-    volumes:
-      - ./velociraptor:/velociraptor/:rw
-    environment:
-      - VELOX_USER=${VELOX_USER}
-      - VELOX_PASSWORD=${VELOX_PASSWORD}
-      - VELOX_ROLE=${VELOX_ROLE}
-      - VELOX_SERVER_URL=${VELOX_SERVER_URL}
-      - VELOX_FRONTEND_HOSTNAME=${VELOX_FRONTEND_HOSTNAME}
-    ports:
-      - "8000:8000"
-      - "8001:8001"
-      - "8889:8889"
+    # Always pull the latest image.
+    image: xboarder56/velociraptor:latest
     restart: unless-stopped
+    
+    # Mount a local directory to persist all config, data, and client bundles.
+    volumes:
+      - ./velodata:/velociraptor
+      
+    # All ports Velociraptor uses.
+    ports:
+      - "8000:8000" # Client/Frontend Ingest
+      - "8889:8889" # Admin GUI
+      - "8001:8001" # gRPC API
+      - "8003:8003" # Prometheus Metrics
+      
+    # Pass environment variables.
+    # We recommend using an .env file for sensitive values.
+    environment:
+      # --- Admin User (Change these!) ---
+      - VELOX_DEFAULT_USER=${VELOX_DEFAULT_USER:-admin}
+      - VELOX_DEFAULT_PASSWORD=${VELOX_DEFAULT_PASSWORD:-changeme}
+      - VELOX_DEFAULT_USER_ROLE=${VELOX_DEFAULT_USER_ROLE:-administrator}
+      
+      # --- Logging (Uncomment to run in quiet/INFO mode) ---
+      # - VELOX_START_SERVER_VERBOSE=false
+      
+      # --- Client/Frontend URL (Required for clients) ---
+      # Tell clients how to reach the server.
+      # For a simple setup, just setting the hostname is enough.
+      - VELOX_FRONTEND_HOSTNAME=${VELOX_FRONTEND_HOSTNAME:-velociraptor.example.com}
+      # - VELOX_FRONTEND_PORT=8000
+      # - VELOX_FRONTEND_SERVER_SCHEME=https
+      
+      # --- GUI URL (Optional) ---
+      # Set this if your admin GUI is on a different public URL.
+      # - VELOX_GUI_HOSTNAME=admin.example.com
+      # - VELOX_GUI_PORT=8889
+      # - VELOX_GUI_SCHEME=https
+
+      # --- Full URL Overrides (Advanced) ---
+      # Use these for complex proxy setups.
+      # - VELOX_FRONTEND_SERVER_URL=https://ingest.example.com/
+      # - VELOX_GUI_URL=https://admin.example.com/app/index.html
