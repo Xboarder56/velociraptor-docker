@@ -41,6 +41,63 @@ VELOX_START_SERVER_VERBOSE="${VELOX_START_SERVER_VERBOSE:-true}"
 VELOX_VERSION="${VELOX_VERSION:-unknown}"
 TARGETARCH="${TARGETARCH:-$(uname -m)}"
 
+for var_name in \
+  VELOX_DEFAULT_USER \
+  VELOX_DEFAULT_PASSWORD \
+  VELOX_DEFAULT_USER_ROLE \
+  VELOX_FRONTEND_HOSTNAME \
+  VELOX_FRONTEND_PORT \
+  VELOX_FRONTEND_SERVER_SCHEME \
+  VELOX_FRONTEND_SERVER_URL \
+  VELOX_GUI_PORT \
+  VELOX_GUI_HOSTNAME \
+  VELOX_GUI_SCHEME \
+  VELOX_GUI_URL \
+  VELOX_API_PORT \
+  VELOX_MONITORING_PORT \
+  VELOX_LOG_DIR \
+  VELOX_DEBUG_DISABLED \
+  VELOX_START_SERVER_VERBOSE
+do
+  current_value=$(eval echo \"\$$var_name\")
+  sanitized_value=${current_value#\"}
+  sanitized_value=${sanitized_value%\"}
+  sanitized_value=${sanitized_value#\'}
+  sanitized_value=${sanitized_value%\'}
+  export "$var_name"="$sanitized_value"
+done
+
+# Derive parts from VELOX_FRONTEND_SERVER_URL (if provided)
+# Accepts forms like: https://host:port/, https://host/, http://host:8000, etc.
+if [ -n "${VELOX_FRONTEND_SERVER_URL:-}" ]; then
+  _url="${VELOX_FRONTEND_SERVER_URL}"
+
+  # scheme
+  _scheme="${_url%%://*}"                     # http or https (best-effort)
+  [ "$_scheme" = "$_url" ] && _scheme="https" # fallback
+
+  # strip scheme://
+  _rest="${_url#*://}"
+
+  # strip path (anything after first /)
+  _hostport="${_rest%%/*}"
+
+  # split host:port
+  if [[ "$_hostport" == *":"* ]]; then
+    _host="${_hostport%%:*}"
+    _port="${_hostport##*:}"
+  else
+    _host="$_hostport"
+    # Default port by scheme if none present
+    if [ "$_scheme" = "https" ]; then _port="443"; else _port="80"; fi
+  fi
+
+  # Export derived defaults only if the explicit “parts” aren’t set
+  : "${VELOX_FRONTEND_HOSTNAME:=$_host}"
+  : "${VELOX_FRONTEND_PORT:=$_port}"
+  : "${VELOX_FRONTEND_SERVER_SCHEME:=$_scheme}"
+fi
+
 # Helper functions for hash state
 read_sha() {
   # Print first field if file exists/non-empty; else print nothing and exit 0
