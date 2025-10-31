@@ -289,6 +289,11 @@ if [ -f server.config.yaml ]; then
   if [ -n "$VELOX_GUI_URL" ]; then
     # a) User provided an explicit GUI URL
     echo " - User provided explicit VELOX_GUI_URL."
+    if [[ "$VELOX_GUI_URL" != */app/index.html ]]; then
+      echo "   - WARNING: VELOX_GUI_URL is missing /app/index.html. Appending it."
+      # This removes a potential trailing slash, then adds the suffix
+      VELOX_GUI_URL="${VELOX_GUI_URL%/}/app/index.html"
+    fi
     update_config_key '.GUI.public_url' "$VELOX_GUI_URL" true
   else
       # b) User did NOT provide an explicit URL, so rebuild it
