@@ -49,12 +49,12 @@ RUN set -eux; \
     curl -fL "$SERVER_URL" -o /opt/velociraptor/linux/velociraptor && chmod +x /opt/velociraptor/linux/velociraptor; \
     [ -x /opt/velociraptor/linux/velociraptor ] || (echo "Server binary missing!" && exit 1); \
     echo "Downloading client binaries..."; \
-    curl -fL "$LINUX_CLIENT_AMD64" -o /opt/velociraptor/linux/velociraptor_client_amd64 || true; \
-    curl -fL "$LINUX_CLIENT_ARM64" -o /opt/velociraptor/linux/velociraptor_client_arm64 || true; \
-    curl -fL "$MAC_CLIENT_AMD64" -o /opt/velociraptor/mac/velociraptor_client_amd64 || true; \
-    curl -fL "$MAC_CLIENT_ARM64" -o /opt/velociraptor/mac/velociraptor_client_arm64 || true; \
-    curl -fL "$WINDOWS_EXE" -o /opt/velociraptor/windows/velociraptor_client.exe || true; \
-    curl -fL "$WINDOWS_MSI" -o /opt/velociraptor/windows/velociraptor_client.msi || true; \
+    curl -fL "$LINUX_CLIENT_AMD64" -o /opt/velociraptor/linux/velociraptor_client_amd64; \
+    curl -fL "$LINUX_CLIENT_ARM64" -o /opt/velociraptor/linux/velociraptor_client_arm64; \
+    curl -fL "$MAC_CLIENT_AMD64"   -o /opt/velociraptor/mac/velociraptor_client_amd64; \
+    curl -fL "$MAC_CLIENT_ARM64"   -o /opt/velociraptor/mac/velociraptor_client_arm64; \
+    curl -fL "$WINDOWS_EXE"        -o /opt/velociraptor/windows/velociraptor_client.exe; \
+    curl -fL "$WINDOWS_MSI"        -o /opt/velociraptor/windows/velociraptor_client.msi; \
     echo "All binaries downloaded successfully."
 
 # Bake checksums next to each present binary
