@@ -170,13 +170,40 @@ If a specific upstream client binary isn’t available, the repack step is skipp
 
 ## Tags
 
-- `:latest` — current release
-- `:<version>` — pinned image matching the bundled Velociraptor release (e.g., `0.75.3`)
+- `:latest` — most recent successful build
+- `:<velociraptor-version>` — e.g. `:0.76.5`. Floats to the latest re-release for that upstream patch.
+- `:<minor>` — e.g. `:0.76`. Floats across patch releases within that minor.
+- `:sha-<short>` — e.g. `:sha-abc1234`. Commit-pinned reproducible reference.
 - Multi-arch manifests are published for **amd64** and **arm64**
 
 ---
 
-### 🧩 About This Fork
+## Build & Release Flow
+
+This repo uses two GitHub Actions workflows:
+
+- **`upstream-check.yml`** runs daily. It polls the Velocidex release feed and, if it sees a newer release *or* if upstream re-published binaries for the current version (with new sha256s), opens a PR bumping `versions.env` + `binaries.lock`. For platforms upstream hasn't published yet for the latest release, the workflow walks back through prior releases and pins those assets to the most recent release that does include them.
+- **`build-publish.yml`** runs on tag pushes matching `v*` and on manual dispatch. It:
+  1. Builds an amd64 image and runs `scripts/ci-image-validation.sh` against it (server starts, GUI responds, a repacked Linux client makes contact).
+  2. Only if validation passes, does a multi-arch (`linux/amd64`, `linux/arm64`) buildx build and pushes to Docker Hub with provenance + SBOM attestations.
+
+To cut a release:
+
+1. Review and merge the PR from `upstream-check`.
+2. Tag the merge commit with the value of `VELOX_VERSION` from `versions.env` (optionally suffixed with `-<IMAGE_REVISION>` when `IMAGE_REVISION > 1`):
+
+   ```bash
+   git tag v0.76.8        # first revision
+   # or
+   git tag v0.76.8-2      # subsequent re-release of the same upstream version
+   git push --tags
+   ```
+
+3. Required Docker Hub secrets on the repo: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
+
+---
+
+### About This Fork
 
 This repository is a fork of [weslambert/velociraptor-docker](https://github.com/weslambert/velociraptor-docker), originally created by **Wes Lambert**.  
 It aims to maintain compatibility with the latest [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) releases while providing additional configuration options and deployment improvements for Docker environments.

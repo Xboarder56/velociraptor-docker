@@ -1,0 +1,26 @@
+# Per-asset version pins. Managed by upstream-check.yml.
+#
+# Each asset records the Velocidex patch version it should be pulled from
+# (e.g. v0.76.5) and the expected sha256.
+#
+# Normally every asset matches VELOX_VERSION in versions.env. When upstream
+# hasn't published a given platform for that patch yet, upstream-check walks
+# back through earlier patches (still inside the same minor release, or
+# earlier minor releases) and pins that asset to the most recent one that
+# does have it.
+#
+# Format: <key>_VERSION=<patch-tag>   <key>_SHA256=<hex>
+# Keys: LINUX_AMD64, LINUX_ARM64, DARWIN_AMD64, DARWIN_ARM64, WINDOWS_EXE, WINDOWS_MSI
+
+LINUX_AMD64_VERSION=v0.76.5
+LINUX_AMD64_SHA256=
+LINUX_ARM64_VERSION=v0.76.5
+LINUX_ARM64_SHA256=
+DARWIN_AMD64_VERSION=v0.76.5
+DARWIN_AMD64_SHA256=
+DARWIN_ARM64_VERSION=v0.76.5
+DARWIN_ARM64_SHA256=
+WINDOWS_EXE_VERSION=v0.76.5
+WINDOWS_EXE_SHA256=
+WINDOWS_MSI_VERSION=v0.76.5
+WINDOWS_MSI_SHA256=

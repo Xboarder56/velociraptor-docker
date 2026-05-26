@@ -1,0 +1,223 @@
+name: upstream-check
+
+# Polls Velocidex/velociraptor releases. Velocidex tags releases by MINOR
+# version (v0.76); each PATCH (v0.76.5, v0.76.6, ...) is added as a new
+# asset to that same release. This workflow inspects asset names across
+# recent releases to find the newest patch per platform, then opens a PR
+# updating versions.env + binaries.lock if anything changed.
+#
+# For platforms upstream hasn't published yet at the newest patch, the
+# best-newest-patch logic naturally pins that platform to its own most
+# recent available patch (no special-case fallback needed).
+
+on:
+  schedule:
+    # Daily at 13:00 UTC. Velocidex ships on the order of weeks; once a
+    # day is plenty without burning runner minutes.
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      force_revision_bump:
+        description: "Bump IMAGE_REVISION even if nothing changed"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPO: Velocidex/velociraptor
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Order matters only for printing.
+      ASSET_KEYS: "LINUX_AMD64 LINUX_ARM64 DARWIN_AMD64 DARWIN_ARM64 WINDOWS_EXE WINDOWS_MSI"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve per-asset latest patches and sha256s
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Per-platform regex against an asset filename. Each pattern
+          # captures the patch version (with leading "v") as group 1.
+          # Note: legacy and -musl variants are intentionally excluded.
+          platform_regex() {
+            case "$1" in
+              LINUX_AMD64)  echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-linux-amd64$' ;;
+              LINUX_ARM64)  echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-linux-arm64$' ;;
+              DARWIN_AMD64) echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-darwin-amd64$' ;;
+              DARWIN_ARM64) echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-darwin-arm64$' ;;
+              WINDOWS_EXE)  echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-windows-amd64\.exe$' ;;
+              WINDOWS_MSI)  echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-windows-amd64\.msi$' ;;
+            esac
+          }
+
+          # Pull the 10 most recent non-draft, non-prerelease releases.
+          gh api -H "Accept: application/vnd.github+json" \
+            "repos/${UPSTREAM_REPO}/releases?per_page=10" \
+            --jq '[.[] | select(.draft==false and .prerelease==false)] | sort_by(.published_at) | reverse' \
+            > releases.json
+
+          # Flatten all assets across all those releases to "name<TAB>url".
+          jq -r '.[] | .assets[] | "\(.name)\t\(.browser_download_url)"' \
+            releases.json > all-assets.tsv
+
+          declare -A VERSION URL SHA256
+
+          for key in $ASSET_KEYS; do
+            re="$(platform_regex "$key")"
+            # Lines like "v0.76.5|<url>"
+            candidates="$(
+              while IFS=$'\t' read -r name url; do
+                if [[ "$name" =~ $re ]]; then
+                  printf '%s|%s\n' "${BASH_REMATCH[1]}" "$url"
+                fi
+              done < all-assets.tsv | sort -V -r
+            )"
+            if [ -z "$candidates" ]; then
+              echo "FATAL: no matching asset found for $key across recent releases" >&2
+              exit 1
+            fi
+            first="$(printf '%s\n' "$candidates" | head -n1)"
+            ver="${first%%|*}"
+            url="${first##*|}"
+            VERSION[$key]="$ver"
+            URL[$key]="$url"
+            echo "  $key -> $ver"
+          done
+
+          # Compute sha256s for each pinned asset (download to /tmp).
+          for key in $ASSET_KEYS; do
+            tmp="$(mktemp)"
+            curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "${URL[$key]}"
+            SHA256[$key]="$(sha256sum "$tmp" | awk '{print $1}')"
+            rm -f "$tmp"
+          done
+
+          # Pick the main VELOX_VERSION as the newest patch across all platforms.
+          NEW_VELOX_VERSION="$(printf '%s\n' "${VERSION[@]}" | sort -V -r | head -n1)"
+          echo "new_velox_version=${NEW_VELOX_VERSION}"
+          echo "new_velox_version=${NEW_VELOX_VERSION}" >> "$GITHUB_OUTPUT"
+
+          mkdir -p .upstream-check
+          {
+            echo "# Source of truth for the image build."
+            echo "# Updated automatically by .github/workflows/upstream-check.yml (PR) and"
+            echo "# read by .github/workflows/build-publish.yml."
+            echo "#"
+            echo "# VELOX_VERSION  = Velocidex patch version this image is built from"
+            echo "#                  (filename component, e.g. v0.76.5). The minor tag the"
+            echo "#                  asset lives under (v0.76) is derived by stripping the"
+            echo "#                  patch suffix."
+            echo "# IMAGE_REVISION = our own re-release counter (bump when we fix something"
+            echo "#                  on our side against the same upstream version)"
+            echo "VELOX_VERSION=${NEW_VELOX_VERSION}"
+            echo "IMAGE_REVISION=__IMAGE_REVISION__"
+          } > .upstream-check/versions.env.new
+
+          {
+            echo "# Per-asset version pins. Managed by upstream-check.yml."
+            echo "#"
+            echo "# Each asset records the Velocidex patch version it should be pulled from"
+            echo "# (e.g. v0.76.5) and the expected sha256."
+            echo "#"
+            echo "# Normally every asset matches VELOX_VERSION in versions.env. When upstream"
+            echo "# hasn't published a given platform for that patch yet, upstream-check walks"
+            echo "# back through earlier patches (still inside the same minor release, or"
+            echo "# earlier minor releases) and pins that asset to the most recent one that"
+            echo "# does have it."
+            echo "#"
+            echo "# Format: <key>_VERSION=<patch-tag>   <key>_SHA256=<hex>"
+            echo "# Keys: LINUX_AMD64, LINUX_ARM64, DARWIN_AMD64, DARWIN_ARM64, WINDOWS_EXE, WINDOWS_MSI"
+            echo ""
+            for key in $ASSET_KEYS; do
+              echo "${key}_VERSION=${VERSION[$key]}"
+              echo "${key}_SHA256=${SHA256[$key]}"
+            done
+          } > .upstream-check/binaries.lock.new
+
+      - name: Compare against repo state and decide revision
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . ./versions.env
+          OLD_VELOX_VERSION="${VELOX_VERSION}"
+          OLD_IMAGE_REVISION="${IMAGE_REVISION}"
+
+          NEW_VELOX_VERSION="${{ steps.resolve.outputs.new_velox_version }}"
+
+          # Diff binaries.lock ignoring comments/whitespace.
+          if diff -q \
+              <(grep -vE '^\s*(#|$)' binaries.lock | sort) \
+              <(grep -vE '^\s*(#|$)' .upstream-check/binaries.lock.new | sort) \
+              >/dev/null; then
+            BINARIES_CHANGED=false
+          else
+            BINARIES_CHANGED=true
+          fi
+
+          FORCE="${{ inputs.force_revision_bump }}"
+
+          if [ "$OLD_VELOX_VERSION" != "$NEW_VELOX_VERSION" ]; then
+            REASON="upstream version bump: ${OLD_VELOX_VERSION} -> ${NEW_VELOX_VERSION}"
+            NEW_IMAGE_REVISION=1
+            CHANGED=true
+          elif [ "$BINARIES_CHANGED" = "true" ]; then
+            REASON="upstream re-published one or more binaries for ${NEW_VELOX_VERSION}"
+            NEW_IMAGE_REVISION=$(( OLD_IMAGE_REVISION + 1 ))
+            CHANGED=true
+          elif [ "$FORCE" = "true" ]; then
+            REASON="manual force-bump"
+            NEW_IMAGE_REVISION=$(( OLD_IMAGE_REVISION + 1 ))
+            CHANGED=true
+          else
+            echo "Nothing changed; nothing to do."
+            CHANGED=false
+            NEW_IMAGE_REVISION="$OLD_IMAGE_REVISION"
+            REASON=""
+          fi
+
+          sed -i "s/__IMAGE_REVISION__/${NEW_IMAGE_REVISION}/" .upstream-check/versions.env.new
+
+          {
+            echo "changed=${CHANGED}"
+            echo "new_velox_version=${NEW_VELOX_VERSION}"
+            echo "new_image_revision=${NEW_IMAGE_REVISION}"
+            echo "reason=${REASON}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply changes to repo
+        if: steps.decide.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          mv .upstream-check/versions.env.new versions.env
+          mv .upstream-check/binaries.lock.new binaries.lock
+          rm -rf .upstream-check releases.json all-assets.tsv
+
+      - name: Open PR
+        if: steps.decide.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: upstream-check/${{ steps.decide.outputs.new_velox_version }}-rev${{ steps.decide.outputs.new_image_revision }}
+          commit-message: |
+            chore(upstream): bump to ${{ steps.decide.outputs.new_velox_version }}-${{ steps.decide.outputs.new_image_revision }}
+
+            ${{ steps.decide.outputs.reason }}
+          title: "chore(upstream): bump to ${{ steps.decide.outputs.new_velox_version }}-${{ steps.decide.outputs.new_image_revision }}"
+          body: |
+            Automated upstream check.
+
+            **Reason:** ${{ steps.decide.outputs.reason }}
+
+            **Velociraptor version:** `${{ steps.decide.outputs.new_velox_version }}`
+            **Image revision:** `${{ steps.decide.outputs.new_image_revision }}`
+
+            When merged, tag this commit `${{ steps.decide.outputs.new_velox_version }}-${{ steps.decide.outputs.new_image_revision }}` (or `${{ steps.decide.outputs.new_velox_version }}` for the first revision) to trigger the publish workflow.
+          delete-branch: true

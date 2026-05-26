@@ -17,7 +17,9 @@ dist/
 *.gz
 
 # Local environment
+.env
 .env.*
+!.env.example
 docker-compose.override.yml
 velo/*
 fakehash.sha256

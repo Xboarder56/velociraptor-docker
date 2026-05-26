@@ -1,0 +1,164 @@
+name: build-publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + validate only, do not push"
+        type: boolean
+        default: false
+
+env:
+  IMAGE: xboarder56/velociraptor
+  BASE_IMAGE: ubuntu:26.04
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      velox_version: ${{ steps.vars.outputs.velox_version }}
+      velox_version_bare: ${{ steps.vars.outputs.velox_version_bare }}
+      velox_minor: ${{ steps.vars.outputs.velox_minor }}
+      image_revision: ${{ steps.vars.outputs.image_revision }}
+      build_args: ${{ steps.vars.outputs.build_args }}
+      base_image_digest: ${{ steps.base_digest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read versions.env and binaries.lock
+        id: vars
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . ./versions.env
+          # shellcheck disable=SC1091
+          . ./binaries.lock
+          velox_version_bare="${VELOX_VERSION#v}"
+          velox_minor="$(echo "$velox_version_bare" | cut -d. -f1,2)"
+          echo "velox_version=${VELOX_VERSION}"           >> "$GITHUB_OUTPUT"
+          echo "velox_version_bare=${velox_version_bare}" >> "$GITHUB_OUTPUT"
+          echo "velox_minor=${velox_minor}"               >> "$GITHUB_OUTPUT"
+          echo "image_revision=${IMAGE_REVISION}"         >> "$GITHUB_OUTPUT"
+
+          # Compose the per-asset build args for docker/build-push-action.
+          {
+            echo "build_args<<EOF"
+            echo "VELOX_VERSION=${VELOX_VERSION}"
+            echo "BASE_IMAGE=${BASE_IMAGE}"
+            echo "GIT_COMMIT=${GITHUB_SHA::7}"
+            echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "VELOX_VERSION_LINUX_AMD64=${LINUX_AMD64_VERSION}"
+            echo "VELOX_VERSION_LINUX_ARM64=${LINUX_ARM64_VERSION}"
+            echo "VELOX_VERSION_DARWIN_AMD64=${DARWIN_AMD64_VERSION}"
+            echo "VELOX_VERSION_DARWIN_ARM64=${DARWIN_ARM64_VERSION}"
+            echo "VELOX_VERSION_WINDOWS_EXE=${WINDOWS_EXE_VERSION}"
+            echo "VELOX_VERSION_WINDOWS_MSI=${WINDOWS_MSI_VERSION}"
+            echo "VELOX_SHA256_LINUX_AMD64=${LINUX_AMD64_SHA256}"
+            echo "VELOX_SHA256_LINUX_ARM64=${LINUX_ARM64_SHA256}"
+            echo "VELOX_SHA256_DARWIN_AMD64=${DARWIN_AMD64_SHA256}"
+            echo "VELOX_SHA256_DARWIN_ARM64=${DARWIN_ARM64_SHA256}"
+            echo "VELOX_SHA256_WINDOWS_EXE=${WINDOWS_EXE_SHA256}"
+            echo "VELOX_SHA256_WINDOWS_MSI=${WINDOWS_MSI_SHA256}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: If triggered by tag, sanity-check tag matches versions.env
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          expected_prefix="${{ steps.vars.outputs.velox_version }}"
+          # Acceptable forms: vX.Y.Z (matches VELOX_VERSION exactly) or vX.Y.Z-N (revisioned).
+          case "$tag" in
+            "$expected_prefix"|"$expected_prefix"-*) : ;;
+            *)
+              echo "Git tag '$tag' does not match versions.env VELOX_VERSION '$expected_prefix'." >&2
+              exit 1
+              ;;
+          esac
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve base image digest
+        id: base_digest
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "${BASE_IMAGE}" --format '{{.Manifest.Digest}}')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Base image ${BASE_IMAGE} digest: ${digest}"
+
+      - name: Build amd64 image for validation
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: velociraptor:smoke
+          build-args: ${{ steps.vars.outputs.build_args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Validate built image
+        env:
+          IMAGE: velociraptor:smoke
+        run: ./scripts/ci-image-validation.sh
+
+  publish:
+    needs: test
+    if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute image tags + OCI labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ needs.test.outputs.velox_version_bare }}
+            type=raw,value=${{ needs.test.outputs.velox_minor }}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+          # metadata-action already auto-injects: created, description, licenses,
+          # revision, source, title, url, version. We override `version` to
+          # point at the upstream Velociraptor release (not the build tag),
+          # and add custom labels it doesn't manage.
+          labels: |
+            org.opencontainers.image.title=Velociraptor
+            org.opencontainers.image.description=Velociraptor (Velocidex) server in a Docker container with prebuilt client repacks
+            org.opencontainers.image.version=${{ needs.test.outputs.velox_version }}
+            org.opencontainers.image.documentation=https://github.com/Xboarder56/velociraptor-docker#readme
+            org.opencontainers.image.vendor=Xboarder56
+            org.opencontainers.image.authors=Xboarder56 <https://github.com/Xboarder56>
+            org.opencontainers.image.base.name=${{ env.BASE_IMAGE }}
+            org.opencontainers.image.base.digest=${{ needs.test.outputs.base_image_digest }}
+
+      - name: Build + push multi-arch
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ needs.test.outputs.build_args }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
