@@ -120,6 +120,11 @@ jobs:
           IMAGE: velociraptor:smoke
         run: ./scripts/ci-image-validation.sh
 
+      - name: Validate config modes and secret files
+        env:
+          IMAGE: velociraptor:smoke
+        run: ./scripts/ci-config-modes-validation.sh
+
   publish:
     needs: test
     if: ${{ github.event_name == 'push' || inputs.dry_run != true }}

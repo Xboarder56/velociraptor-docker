@@ -13,8 +13,15 @@ STATE_HASH_DIR="${CLIENT_DIR}/.refhash"
 
 # Identity & auth
 VELOX_DEFAULT_USER="${VELOX_DEFAULT_USER:-admin}"
-VELOX_DEFAULT_PASSWORD="${VELOX_DEFAULT_PASSWORD:-changeme}"
+VELOX_DEFAULT_PASSWORD="${VELOX_DEFAULT_PASSWORD:-}"
+VELOX_DEFAULT_PASSWORD_FILE="${VELOX_DEFAULT_PASSWORD_FILE:-}"
 VELOX_DEFAULT_USER_ROLE="${VELOX_DEFAULT_USER_ROLE:-administrator}"
+
+# Configuration ownership. Keep reconcile as the default for compatibility
+# with existing installations, which expect environment variables to update a
+# persisted server.config.yaml on restart.
+VELOX_CONFIG_MODE="${VELOX_CONFIG_MODE:-reconcile}"
+VELOX_CONFIG_FILE="${VELOX_CONFIG_FILE:-}"
 
 # Network Configuration
 BIND_ADDRESS="0.0.0.0"
@@ -45,7 +52,10 @@ TARGETARCH="${TARGETARCH:-$(uname -m)}"
 for var_name in \
   VELOX_DEFAULT_USER \
   VELOX_DEFAULT_PASSWORD \
+  VELOX_DEFAULT_PASSWORD_FILE \
   VELOX_DEFAULT_USER_ROLE \
+  VELOX_CONFIG_MODE \
+  VELOX_CONFIG_FILE \
   VELOX_FRONTEND_HOSTNAME \
   VELOX_FRONTEND_PORT \
   VELOX_FRONTEND_SERVER_SCHEME \
@@ -67,6 +77,33 @@ do
   sanitized_value=${sanitized_value%\'}
   export "$var_name"="$sanitized_value"
 done
+
+VELOX_CONFIG_MODE="${VELOX_CONFIG_MODE,,}"
+case "$VELOX_CONFIG_MODE" in
+  reconcile|generated)
+    CONFIG_FILE="${VELOX_CONFIG_FILE:-server.config.yaml}"
+    ;;
+  external)
+    if [ -z "$VELOX_CONFIG_FILE" ]; then
+      echo "FATAL: VELOX_CONFIG_FILE is required when VELOX_CONFIG_MODE=external." >&2
+      exit 1
+    fi
+    CONFIG_FILE="$VELOX_CONFIG_FILE"
+    if [ ! -f "$CONFIG_FILE" ]; then
+      echo "FATAL: external Velociraptor config not found: $CONFIG_FILE" >&2
+      exit 1
+    fi
+    if [ ! -r "$CONFIG_FILE" ]; then
+      echo "FATAL: external Velociraptor config is not readable: $CONFIG_FILE" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "FATAL: invalid VELOX_CONFIG_MODE '$VELOX_CONFIG_MODE' (expected reconcile, generated, or external)." >&2
+    exit 1
+    ;;
+esac
+export VELOX_CONFIG_MODE VELOX_CONFIG_FILE
 
 # Derive parts from VELOX_FRONTEND_SERVER_URL (if provided)
 # Accepts forms like: https://host:port/, https://host/, http://host:8000, etc.
@@ -112,6 +149,44 @@ read_sha() {
 write_state_sha() { mkdir -p "$STATE_HASH_DIR"; printf "%s" "$2" > "${STATE_HASH_DIR}/$1.sha256"; }
 get_state_sha() { read_sha "${STATE_HASH_DIR}/$1.sha256"; }
 
+# Resolve a sensitive value from VAR or VAR_FILE. The file form follows the
+# Docker/Podman secrets convention and keeps the secret itself out of the
+# container configuration shown by inspect. It is intentionally called only
+# when the bootstrap value is actually needed.
+load_env_or_file() {
+  local var_name="$1"
+  local default_value="$2"
+  local file_var_name="${var_name}_FILE"
+  local direct_value="${!var_name:-}"
+  local file_path="${!file_var_name:-}"
+
+  if [ -n "$direct_value" ] && [ -n "$file_path" ]; then
+    echo "FATAL: set either $var_name or $file_var_name, not both." >&2
+    return 1
+  fi
+
+  if [ -n "$file_path" ]; then
+    if [ ! -f "$file_path" ] || [ ! -r "$file_path" ]; then
+      echo "FATAL: $file_var_name does not point to a readable file: $file_path" >&2
+      return 1
+    fi
+    if [ ! -s "$file_path" ]; then
+      echo "FATAL: $file_var_name points to an empty file: $file_path" >&2
+      return 1
+    fi
+    direct_value="$(< "$file_path")"
+    if [ -z "$direct_value" ]; then
+      echo "FATAL: $file_var_name contains no usable value: $file_path" >&2
+      return 1
+    fi
+  elif [ -z "$direct_value" ]; then
+    direct_value="$default_value"
+  fi
+
+  printf -v "$var_name" '%s' "$direct_value"
+  export "$var_name"
+}
+
 mkdir -p "$CLIENT_DIR" "$FILESTORE_DIRECTORY" "$STATE_HASH_DIR" "${VELOX_LOG_DIR:-./logs}"
 
 echo "============================================"
@@ -123,6 +198,8 @@ echo " Git Commit:       ${GIT_COMMIT:-unknown}"
 echo " Build Date:       ${BUILD_DATE:-unknown}"
 echo " Base Image:       ${BASE_IMAGE:-unknown}"
 echo " Triage Commit:    ${VELOX_TRIAGE_SOURCE_COMMIT:-unknown}"
+echo " Config Mode:      ${VELOX_CONFIG_MODE}"
+echo " Config File:      ${CONFIG_FILE}"
 echo "============================================"
 
 # Verify required tools
@@ -146,9 +223,20 @@ else
   exit 1
 fi
 
-# Generate server config if missing
-if [ ! -f server.config.yaml ]; then
+# Generate server config if missing. External mode was validated above and may
+# never enter this branch.
+if [ ! -f "$CONFIG_FILE" ]; then
   echo "Generating initial server config..."
+
+  config_parent="$(dirname "$CONFIG_FILE")"
+  if [ ! -d "$config_parent" ]; then
+    echo "FATAL: parent directory for VELOX_CONFIG_FILE does not exist: $config_parent" >&2
+    exit 1
+  fi
+
+  # Validate bootstrap credentials before writing any part of a new config, so
+  # an invalid secret source can never leave behind a half-initialized install.
+  load_env_or_file VELOX_DEFAULT_PASSWORD changeme
 
   if [ -z "$VELOX_FRONTEND_SERVER_URL" ]; then
     scheme="${VELOX_FRONTEND_SERVER_SCHEME:-https}"
@@ -197,17 +285,21 @@ if [ ! -f server.config.yaml ]; then
       "location":"'"$DATASTORE_LOCATION"'",
       "filestore_directory":"'"$FILESTORE_DIRECTORY"'"
     }
-  }' > server.config.yaml
+  }' > "$CONFIG_FILE"
 
   # Fix temp path references
-  sed -i 's#/tmp/velociraptor#.#g' server.config.yaml
+  sed -i 's#/tmp/velociraptor#.#g' "$CONFIG_FILE"
 
   echo "Creating default user '${VELOX_DEFAULT_USER}'..."
-  ./velociraptor --config server.config.yaml user add "$VELOX_DEFAULT_USER" "$VELOX_DEFAULT_PASSWORD" --role "$VELOX_DEFAULT_USER_ROLE"
+  ./velociraptor --config "$CONFIG_FILE" user add "$VELOX_DEFAULT_USER" "$VELOX_DEFAULT_PASSWORD" --role "$VELOX_DEFAULT_USER_ROLE"
 fi
 
-# Update existing server config from ENV vars
-if [ -f server.config.yaml ]; then
+# Do not retain bootstrap secrets in the environment of the server process.
+unset VELOX_DEFAULT_PASSWORD VELOX_DEFAULT_PASSWORD_FILE
+
+# Update existing server config from ENV vars. This is the historical behavior
+# and remains the default. Generated and external configs are authoritative.
+if [ "$VELOX_CONFIG_MODE" = "reconcile" ]; then
   echo "Existing config found. Checking for updates from environment variables..."
   
   CONFIG_UPDATED=false
@@ -225,15 +317,15 @@ if [ -f server.config.yaml ]; then
 
     # Read the current raw value from the YAML file (-r)
     local current_value
-    current_value=$(yq -r "$key_path" server.config.yaml)
+    current_value=$(yq -r "$key_path" "$CONFIG_FILE")
     
     # Compare and update if different
     if [ "$current_value" != "$new_value" ]; then
       echo "  - Updating '$key_path': '$current_value' -> '$new_value'"
       if [ "$is_string" = "true" ]; then
-        yq -i -y "$key_path = \"$new_value\"" server.config.yaml
+        yq -i -y "$key_path = \"$new_value\"" "$CONFIG_FILE"
       else
-        yq -i -y "$key_path = $new_value" server.config.yaml
+        yq -i -y "$key_path = $new_value" "$CONFIG_FILE"
       fi
       CONFIG_UPDATED=true
     fi
@@ -257,7 +349,7 @@ if [ -f server.config.yaml ]; then
     update_config_key '(.Client.server_urls[0])' "$VELOX_FRONTEND_SERVER_URL" true
   else
     # b) User did NOT provide an explicit URL
-    current_url=$(yq -r '(.Client.server_urls[0])' server.config.yaml)
+    current_url=$(yq -r '(.Client.server_urls[0])' "$CONFIG_FILE")
     current_scheme=$(echo "$current_url" | grep -o '^[a-zA-Z]*')
     current_host=$(echo "$current_url" | sed -E 's|^[a-zA-Z]+://([^/:]+).*|\1|')
     current_port=$(echo "$current_url" | sed -E 's|^[a-zA-Z]+://[^/:]+:([0-9]+).*|\1|')
@@ -299,7 +391,7 @@ if [ -f server.config.yaml ]; then
     update_config_key '.GUI.public_url' "$VELOX_GUI_URL" true
   else
       # b) User did NOT provide an explicit URL, so rebuild it
-      current_gui_url=$(yq -r '.GUI.public_url // ""' server.config.yaml)
+      current_gui_url=$(yq -r '.GUI.public_url // ""' "$CONFIG_FILE")
 
   if [ -n "$current_gui_url" ]; then
         # A GUI URL exists, parse it
@@ -307,7 +399,7 @@ if [ -f server.config.yaml ]; then
         current_gui_host=$(echo "$current_gui_url" | sed -E 's|^[a-zA-Z]+://([^/:]+).*|\1|')
     else
         # GUI URL is missing (legacy), so borrow from the CLIENT URL as a workaround
-        current_client_url=$(yq -r '(.Client.server_urls[0])' server.config.yaml)
+        current_client_url=$(yq -r '(.Client.server_urls[0])' "$CONFIG_FILE")
         current_gui_scheme=$(echo "$current_client_url" | grep -o '^[a-zA-Z]*')
         current_gui_host=$(echo "$current_client_url" | sed -E 's|^[a-zA-Z]+://([^/:]+).*|\1|')
     fi
@@ -324,7 +416,7 @@ if [ -f server.config.yaml ]; then
     if [ -n "$VELOX_GUI_PORT" ]; then
         port="$VELOX_GUI_PORT"
     else
-        port=$(yq -r '.GUI.bind_port' server.config.yaml)
+        port=$(yq -r '.GUI.bind_port' "$CONFIG_FILE")
     fi
 
     # Build the new URL and update the config
@@ -335,22 +427,28 @@ if [ -f server.config.yaml ]; then
   if [ "$CONFIG_UPDATED" = "false" ]; then
     echo " - Configuration is already up-to-date."
   fi
+elif [ "$VELOX_CONFIG_MODE" = "generated" ]; then
+  echo "Generated config mode: existing configuration is authoritative; skipping environment reconciliation."
+else
+  echo "External config mode: configuration is read-only; skipping environment reconciliation."
 fi
 
 # Rotate Expired Cert
-if true | ./velociraptor --config server.config.yaml config show --json | jq -r .Frontend.certificate | openssl x509 -text -enddate -noout -checkend 86400 >/dev/null; then
+if [ "$VELOX_CONFIG_MODE" = "external" ]; then
+  echo "External config mode: skipping automatic certificate rotation."
+elif true | ./velociraptor --config "$CONFIG_FILE" config show --json | jq -r .Frontend.certificate | openssl x509 -text -enddate -noout -checkend 86400 >/dev/null; then
   echo "Certificate valid, skipping renewal."
 else
   echo "Rotating expiring certificate..."
-  ./velociraptor --config server.config.yaml config rotate_keys > /tmp/server.config.yaml
-  cp server.config.yaml server.config.yaml.bak.$(date +%Y%m%d%H%M%S)
-  mv /tmp/server.config.yaml server.config.yaml
+  ./velociraptor --config "$CONFIG_FILE" config rotate_keys > /tmp/server.config.yaml
+  cp "$CONFIG_FILE" "$CONFIG_FILE.bak.$(date +%Y%m%d%H%M%S)"
+  mv /tmp/server.config.yaml "$CONFIG_FILE"
 fi
 
 # Generate client config & decide whether to repack
 echo "Assessing whether client repack is required..."
 mkdir -p "$CLIENT_DIR"/{linux,mac,windows}
-./velociraptor --config server.config.yaml config client > client.config.yaml
+./velociraptor --config "$CONFIG_FILE" config client > client.config.yaml
 
 NEED_REPACK=false
 
@@ -494,6 +592,8 @@ echo "Velociraptor starting..."
 echo "====================================================="
 echo " Velociraptor Configuration"
 echo "-----------------------------------------------------"
+echo " Config Mode:                ${VELOX_CONFIG_MODE}"
+echo " Config File:                ${CONFIG_FILE}"
 echo " GUI URL:                    ${VELOX_GUI_URL}"
 echo " Client URL (Frontend):      ${VELOX_FRONTEND_SERVER_URL}"
 echo " Default User:               ${VELOX_DEFAULT_USER}"
@@ -504,7 +604,7 @@ echo " FileStore Dir:              ${FILESTORE_DIRECTORY}"
 echo " Bundled Artifact Dir:       ${ARTIFACT_DEFINITIONS_DIR}"
 echo "====================================================="
 
-CMD=(./velociraptor --config server.config.yaml --definitions "$ARTIFACT_DEFINITIONS_DIR" frontend)
+CMD=(./velociraptor --config "$CONFIG_FILE" --definitions "$ARTIFACT_DEFINITIONS_DIR" frontend)
 if [ "${VELOX_START_SERVER_VERBOSE,,}" = "true" ]; then
   CMD+=(-v)
 fi

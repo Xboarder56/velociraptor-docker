@@ -36,8 +36,11 @@ These **variables are read at container start**—no image rebuilds needed.
 
 | Variable                          | Purpose                                                                              | Default                         |
 | --------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------- |
+| `VELOX_CONFIG_MODE`               | Config ownership: `reconcile`, `generated`, or `external`                            | `reconcile`                     |
+| `VELOX_CONFIG_FILE`               | Server config path; required in `external` mode                                      | `server.config.yaml`            |
 | `VELOX_DEFAULT_USER`              | Initial GUI admin username                                                           | `admin`                         |
 | `VELOX_DEFAULT_PASSWORD`          | Initial GUI admin password                                                           | `changeme`                      |
+| `VELOX_DEFAULT_PASSWORD_FILE`     | Read the initial admin password from a mounted secret file                           | unset                           |
 | `VELOX_DEFAULT_USER_ROLE`         | Role for the bootstrap user                                                          | `administrator`                 |
 | **File System**                   |                                                                                      |                                 |
 | `VELOX_FILESTORE_DIRECTORY`       | Root of Velociraptor filestore (collections, uploads)                                | `/velociraptor/filestore`       |
@@ -66,6 +69,52 @@ These **variables are read at container start**—no image rebuilds needed.
 - `/velociraptor/server.config.yaml` — server config (auto-generated)
 - `/velociraptor/client.config.yaml` — client config
 - `/velociraptor/client_bundles/` — repacked client binaries (.deb/.rpm/.exe/.msi)
+
+### Configuration ownership modes
+
+The default remains `reconcile`, preserving the behavior of previous image versions and existing installations.
+
+| Mode | Behavior |
+| ---- | -------- |
+| `reconcile` | Generate a missing config, then apply explicitly supplied environment settings on every start. Automatic certificate rotation remains enabled. |
+| `generated` | Generate a missing config, but treat an existing config as authoritative instead of reconciling environment settings. Automatic certificate rotation remains enabled. |
+| `external` | Require `VELOX_CONFIG_FILE` to reference an existing readable config. The entrypoint never generates, edits, backs up, or rotates this file. Bootstrap-user creation is skipped. |
+
+Use an external config with a read-only bind mount:
+
+```bash
+docker run -it --rm \
+  -e VELOX_CONFIG_MODE=external \
+  -e VELOX_CONFIG_FILE=/config/server.config.yaml \
+  -v "$PWD/server.config.yaml:/config/server.config.yaml:ro" \
+  -v "$PWD/velodata:/velociraptor" \
+  -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
+  docker.io/xboarder56/velociraptor:latest
+```
+
+Because `external` mode cannot replace its configuration, certificate/key rotation must be handled by the external config owner. Generated client configuration and client bundles are still written beneath `/velociraptor`.
+
+### Bootstrap password secrets
+
+`VELOX_DEFAULT_PASSWORD_FILE` follows the Docker/Podman `_FILE` convention. It is read only while creating a new server config and bootstrap user. The file must be readable and non-empty, and setting both password variables during initialization is an error.
+
+```yaml
+secrets:
+  velociraptor_admin_password:
+    file: ./secrets/admin-password
+
+services:
+  velociraptor:
+    image: docker.io/xboarder56/velociraptor:latest
+    environment:
+      VELOX_DEFAULT_PASSWORD_FILE: /run/secrets/velociraptor_admin_password
+    secrets:
+      - velociraptor_admin_password
+    volumes:
+      - ./velodata:/velociraptor
+```
+
+The secret value is not placed in the container environment or retained by the server process. The secret-file path remains visible in container metadata. Direct `VELOX_DEFAULT_PASSWORD` remains supported for compatibility, but direct environment values are visible through container inspection.
 
 ---
 
@@ -117,6 +166,7 @@ services:
     image: docker.io/xboarder56/velociraptor:latest
     restart: unless-stopped
     environment:
+      VELOX_CONFIG_MODE: reconcile # backward-compatible default
       VELOX_DEFAULT_USER: admin
       VELOX_DEFAULT_PASSWORD: "S3cure!"
       VELOX_FRONTEND_HOSTNAME: velociraptor.example.com
@@ -167,7 +217,7 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 
 ## Security Notes
 
-- **Change the default credentials** via `VELOX_DEFAULT_USER` / `VELOX_DEFAULT_PASSWORD` on first run.
+- **Change the default credentials** on first run; prefer `VELOX_DEFAULT_PASSWORD_FILE` so the password is not stored in container metadata.
 - TLS is **self-signed** by default; rotate keys/certificates as needed from the server.
 - Expose GUI/API only where appropriate; consider a reverse proxy or firewall rules.
 

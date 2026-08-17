@@ -37,9 +37,17 @@ services:
         required: false
 
     environment:
+      # --- Config ownership ---
+      # `reconcile` preserves the historical behavior and is the default.
+      # See README.md before selecting `generated` or `external`.
+      VELOX_CONFIG_MODE: ${VELOX_CONFIG_MODE:-reconcile}
+
       # --- Bootstrap admin user (change before exposing publicly) ---
       VELOX_DEFAULT_USER: ${VELOX_DEFAULT_USER:-admin}
-      VELOX_DEFAULT_PASSWORD: ${VELOX_DEFAULT_PASSWORD:-changeme}
+      # Empty values let the entrypoint retain its backward-compatible default.
+      # Set only one password source; for _FILE, also mount the secret there.
+      VELOX_DEFAULT_PASSWORD: ${VELOX_DEFAULT_PASSWORD:-}
+      VELOX_DEFAULT_PASSWORD_FILE: ${VELOX_DEFAULT_PASSWORD_FILE:-}
       VELOX_DEFAULT_USER_ROLE: ${VELOX_DEFAULT_USER_ROLE:-administrator}
 
       # --- Public URL clients use to reach this server ---
