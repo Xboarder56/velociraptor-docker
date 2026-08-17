@@ -12,7 +12,7 @@ on:
         default: false
 
 env:
-  IMAGE: xboarder56/velociraptor
+  IMAGE: docker.io/xboarder56/velociraptor
   BASE_IMAGE: ubuntu:26.04
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read versions.env and binaries.lock
+      - name: Read versions.env and lockfiles
         id: vars
         run: |
           set -euo pipefail
@@ -36,6 +36,8 @@ jobs:
           . ./versions.env
           # shellcheck disable=SC1091
           . ./binaries.lock
+          # shellcheck disable=SC1091
+          . ./artifacts.lock
           velox_version_bare="${VELOX_VERSION#v}"
           velox_minor="$(echo "$velox_version_bare" | cut -d. -f1,2)"
           echo "velox_version=${VELOX_VERSION}"           >> "$GITHUB_OUTPUT"
@@ -56,12 +58,23 @@ jobs:
             echo "VELOX_VERSION_DARWIN_ARM64=${DARWIN_ARM64_VERSION}"
             echo "VELOX_VERSION_WINDOWS_EXE=${WINDOWS_EXE_VERSION}"
             echo "VELOX_VERSION_WINDOWS_MSI=${WINDOWS_MSI_VERSION}"
+            echo "VELOX_URL_LINUX_AMD64=${LINUX_AMD64_URL}"
+            echo "VELOX_URL_LINUX_ARM64=${LINUX_ARM64_URL}"
+            echo "VELOX_URL_DARWIN_AMD64=${DARWIN_AMD64_URL}"
+            echo "VELOX_URL_DARWIN_ARM64=${DARWIN_ARM64_URL}"
+            echo "VELOX_URL_WINDOWS_EXE=${WINDOWS_EXE_URL}"
+            echo "VELOX_URL_WINDOWS_MSI=${WINDOWS_MSI_URL}"
             echo "VELOX_SHA256_LINUX_AMD64=${LINUX_AMD64_SHA256}"
             echo "VELOX_SHA256_LINUX_ARM64=${LINUX_ARM64_SHA256}"
             echo "VELOX_SHA256_DARWIN_AMD64=${DARWIN_AMD64_SHA256}"
             echo "VELOX_SHA256_DARWIN_ARM64=${DARWIN_ARM64_SHA256}"
             echo "VELOX_SHA256_WINDOWS_EXE=${WINDOWS_EXE_SHA256}"
             echo "VELOX_SHA256_WINDOWS_MSI=${WINDOWS_MSI_SHA256}"
+            echo "TRIAGE_SOURCE_COMMIT=${TRIAGE_SOURCE_COMMIT}"
+            echo "TRIAGE_LINUX_UAC_URL=${TRIAGE_LINUX_UAC_URL}"
+            echo "TRIAGE_LINUX_UAC_SHA256=${TRIAGE_LINUX_UAC_SHA256}"
+            echo "TRIAGE_WINDOWS_TARGETS_URL=${TRIAGE_WINDOWS_TARGETS_URL}"
+            echo "TRIAGE_WINDOWS_TARGETS_SHA256=${TRIAGE_WINDOWS_TARGETS_SHA256}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 

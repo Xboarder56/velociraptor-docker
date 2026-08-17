@@ -1,4 +1,4 @@
-# Reference docker-compose for xboarder56/velociraptor.
+# Reference docker-compose for docker.io/xboarder56/velociraptor.
 #
 # Copy this file to your deployment directory, then:
 #   1. cp .env.example .env  &&  edit .env with your secrets
@@ -11,7 +11,7 @@ services:
   velociraptor:
     # Pin to a specific image for reproducibility. Switch to `:latest`
     # if you'd rather always run the newest build.
-    image: xboarder56/velociraptor:0.76.5
+    image: docker.io/xboarder56/velociraptor:0.77.2
     restart: unless-stopped
     stop_grace_period: 30s
 

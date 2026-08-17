@@ -1,0 +1,11 @@
+# Bundled custom artifact pins. Managed by upstream-check.yml.
+#
+# Generated definitions come from the official Velocidex Triage project's
+# GitHub Pages branch. URLs contain an immutable commit and every definition
+# is verified during the image build.
+
+TRIAGE_SOURCE_COMMIT=9fb612a0cda4a58c3290f0943df67064e63be51b
+TRIAGE_LINUX_UAC_URL=https://raw.githubusercontent.com/Velocidex/velociraptor-triage-collector/9fb612a0cda4a58c3290f0943df67064e63be51b/docs/linux.triage.uac/Linux.Triage.UAC.yaml
+TRIAGE_LINUX_UAC_SHA256=ff4e806ed70a76222a27ff8390b2d45995ea4e8be849e39daad0387f2093c3b1
+TRIAGE_WINDOWS_TARGETS_URL=https://raw.githubusercontent.com/Velocidex/velociraptor-triage-collector/9fb612a0cda4a58c3290f0943df67064e63be51b/docs/windows.triage.targets/Windows.Triage.Targets.yaml
+TRIAGE_WINDOWS_TARGETS_SHA256=1a699aa9d5346fe342fb7c646bdfc755e110cf745658fab35499980fc0bbbb1c

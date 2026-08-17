@@ -2,12 +2,13 @@
 set -e
 echo "Starting Velociraptor entrypoint..."
 
-# File System Configuratio
+# File System Configuration
 PUBLIC_PATH="public"
 DATASTORE_LOCATION="./" # card catalog (client metadata, VQL queries, hunts, etc.)
 FILESTORE_DIRECTORY="${VELOX_FILESTORE_DIRECTORY:-./filestore}" # binary file uploads (executables, log files, memory images, etc.)
 CLIENT_DIR="${VELOX_CLIENT_DIR:-/velociraptor/client_bundles}"
 SERVER_SRC="/opt/velociraptor/linux/velociraptor"
+ARTIFACT_DEFINITIONS_DIR="/opt/velociraptor/artifacts"
 STATE_HASH_DIR="${CLIENT_DIR}/.refhash"
 
 # Identity & auth
@@ -121,6 +122,7 @@ echo " Architecture:     ${TARGETARCH}"
 echo " Git Commit:       ${GIT_COMMIT:-unknown}"
 echo " Build Date:       ${BUILD_DATE:-unknown}"
 echo " Base Image:       ${BASE_IMAGE:-unknown}"
+echo " Triage Commit:    ${VELOX_TRIAGE_SOURCE_COMMIT:-unknown}"
 echo "============================================"
 
 # Verify required tools
@@ -499,9 +501,10 @@ echo " Role:                       ${VELOX_DEFAULT_USER_ROLE}"
 echo " Client Dir:                 ${CLIENT_DIR}"
 echo " DataStore Dir:              ${DATASTORE_LOCATION}"
 echo " FileStore Dir:              ${FILESTORE_DIRECTORY}"
+echo " Bundled Artifact Dir:       ${ARTIFACT_DEFINITIONS_DIR}"
 echo "====================================================="
 
-CMD=(./velociraptor --config server.config.yaml frontend)
+CMD=(./velociraptor --config server.config.yaml --definitions "$ARTIFACT_DEFINITIONS_DIR" frontend)
 if [ "${VELOX_START_SERVER_VERBOSE,,}" = "true" ]; then
   CMD+=(-v)
 fi

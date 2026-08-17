@@ -21,10 +21,12 @@ On start, the container prints a small build banner (version, arch, base image, 
 docker run -it --rm \
   -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
   -v $PWD/velodata:/velociraptor \
-  xboarder56/velociraptor:latest
+  docker.io/xboarder56/velociraptor:latest
 ```
 
 Open [**https://localhost:8889**](https://localhost:8889) (accept the self-signed cert) and log in with the bootstrap credentials below (you should change them right away).
+
+The same command works with Podman by replacing `docker` with `podman`. The fully qualified `docker.io/...` image name avoids short-name registry ambiguity. On SELinux-enforcing hosts, label a bind mount for the container by using `-v "$PWD/velodata:/velociraptor:Z"`.
 
 ---
 
@@ -38,8 +40,8 @@ These **variables are read at container start**—no image rebuilds needed.
 | `VELOX_DEFAULT_PASSWORD`          | Initial GUI admin password                                                           | `changeme`                      |
 | `VELOX_DEFAULT_USER_ROLE`         | Role for the bootstrap user                                                          | `administrator`                 |
 | **File System**                   |                                                                                      |                                 |
-| `VELOX_FILESTORE_DIRECTORY`       | Root of Velociraptor filestore (collections, uploads)                                | `/velociraptor/file_store`      |
-| `VELOX_CLIENT_DIR`                | Directory where repacked clients are stored                                          | `/velociraptor/client_bundles}` |
+| `VELOX_FILESTORE_DIRECTORY`       | Root of Velociraptor filestore (collections, uploads)                                | `/velociraptor/filestore`       |
+| `VELOX_CLIENT_DIR`                | Directory where repacked clients are stored                                          | `/velociraptor/client_bundles`  |
 | **Client/Frontend Configuration** |                                                                                      |                                 |
 | `VELOX_FRONTEND_HOSTNAME`         | Public hostname for clients (builds client URL)                                      | `localhost`                     |
 | `VELOX_FRONTEND_PORT`             | Public-facing port for clients (builds client URL)                                   | `8000`                          |
@@ -55,7 +57,7 @@ These **variables are read at container start**—no image rebuilds needed.
 | `VELOX_API_PORT`                  | gRPC API port                                                                        | `8001`                          |
 | `VELOX_MONITORING_PORT`           | Metrics port                                                                         | `8003`                          |
 | **Logging**                       |                                                                                      |                                 |
-| `VELOX_START_SERVER_VERBOSE`      | `true` to enable verbose (`-v`) server logs                                          | *(off)*                         |
+| `VELOX_START_SERVER_VERBOSE`      | `true` to enable verbose (`-v`) server logs                                          | `true`                          |
 | `VELOX_LOG_DIR`                   | Where component logs write inside container                                          | `.`                             |
 | `VELOX_DEBUG_DISABLED`            | Disable DEBUG in component logs                                                      | `true`                          |
 
@@ -79,7 +81,7 @@ docker run -it --rm \
   -v $PWD/velodata:/velociraptor \
   -e VELOX_DEFAULT_USER=admin -e VELOX_DEFAULT_PASSWORD='S3cure!' \
   -e VELOX_START_SERVER_VERBOSE=false \
-  xboarder56/velociraptor:latest
+  docker.io/xboarder56/velociraptor:latest
 ```
 
 ### 2) Set the public URL clients should use
@@ -91,7 +93,7 @@ docker run -it --rm \
   -e VELOX_FRONTEND_SERVER_SCHEME=https \
   -p 443:8000 -p 8889:8889 \
   -v $PWD/velodata:/velociraptor \
-  xboarder56/velociraptor:latest
+  docker.io/xboarder56/velociraptor:latest
 ```
 
 ### 3) Use different public URLs for Client and GUI
@@ -102,7 +104,7 @@ docker run -it --rm \
   -e VELOX_GUI_URL=https://admin.example.com:8889/ \
   -p 8000:8000 -p 8889:8889 \
   -v $PWD/velodata:/velociraptor \
-  xboarder56/velociraptor:latest
+  docker.io/xboarder56/velociraptor:latest
 ```
 
 ---
@@ -112,7 +114,7 @@ docker run -it --rm \
 ```yaml
 services:
   velociraptor:
-    image: xboarder56/velociraptor:latest
+    image: docker.io/xboarder56/velociraptor:latest
     restart: unless-stopped
     environment:
       VELOX_DEFAULT_USER: admin
@@ -144,7 +146,7 @@ services:
 
 After startup, check `./velodata/client_bundles/` for repacked binaries:
 
-- **Linux:** `.deb` and `.rpm` packages for amd64 and arm64
+- **Linux:** repacked executables for amd64 and arm64; `.deb` and `.rpm` packages for the image's native architecture
 - **macOS:** repacked executables for amd64 and arm64
 - **Windows:** `.exe` and `.msi`
 
@@ -152,9 +154,20 @@ If a specific upstream client binary isn’t available, the repack step is skipp
 
 ---
 
+## Bundled Triage Artifacts
+
+Every image includes these official [Velocidex Triage Artifacts](https://triage.velocidex.com/docs/triage_artifacts/):
+
+- `Linux.Triage.UAC`
+- `Windows.Triage.Targets`
+
+The generated definitions are pinned to an immutable upstream commit, verified by SHA-256 during the image build, validated against the bundled Velociraptor binary, and loaded on every server start. The daily upstream workflow tracks both definitions and opens a revision PR when they change.
+
+---
+
 ## Security Notes
 
-- **Change the default credentials** via `VELOX_USER` / `VELOX_PASSWORD` on first run.
+- **Change the default credentials** via `VELOX_DEFAULT_USER` / `VELOX_DEFAULT_PASSWORD` on first run.
 - TLS is **self-signed** by default; rotate keys/certificates as needed from the server.
 - Expose GUI/API only where appropriate; consider a reverse proxy or firewall rules.
 
@@ -182,7 +195,7 @@ If a specific upstream client binary isn’t available, the repack step is skipp
 
 This repo uses two GitHub Actions workflows:
 
-- **`upstream-check.yml`** runs daily. It polls the Velocidex release feed and, if it sees a newer release *or* if upstream re-published binaries for the current version (with new sha256s), opens a PR bumping `versions.env` + `binaries.lock`. For platforms upstream hasn't published yet for the latest release, the workflow walks back through prior releases and pins those assets to the most recent release that does include them.
+- **`upstream-check.yml`** runs daily. It polls the Velocidex release feed and the official Triage artifact project. If it sees a newer release, re-published binaries, or updated Triage definitions, it opens a PR bumping the corresponding lockfiles. For platforms upstream hasn't published yet for the latest release, the workflow walks back through prior releases and pins those assets to the most recent release that does include them.
 - **`build-publish.yml`** runs on tag pushes matching `v*` and on manual dispatch. It:
   1. Builds an amd64 image and runs `scripts/ci-image-validation.sh` against it (server starts, GUI responds, a repacked Linux client makes contact).
   2. Only if validation passes, does a multi-arch (`linux/amd64`, `linux/arm64`) buildx build and pushes to Docker Hub with provenance + SBOM attestations.

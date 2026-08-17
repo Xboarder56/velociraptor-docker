@@ -1,7 +1,7 @@
 # Per-asset version pins. Managed by upstream-check.yml.
 #
 # Each asset records the Velocidex patch version it should be pulled from
-# (e.g. v0.76.5) and the expected sha256.
+# (e.g. v0.77.2), its exact API-provided URL, and expected sha256.
 #
 # Normally every asset matches VELOX_VERSION in versions.env. When upstream
 # hasn't published a given platform for that patch yet, upstream-check walks
@@ -9,18 +9,24 @@
 # earlier minor releases) and pins that asset to the most recent one that
 # does have it.
 #
-# Format: <key>_VERSION=<patch-tag>   <key>_SHA256=<hex>
+# Format: <key>_VERSION=<patch-tag>, <key>_URL=<url>, <key>_SHA256=<hex>
 # Keys: LINUX_AMD64, LINUX_ARM64, DARWIN_AMD64, DARWIN_ARM64, WINDOWS_EXE, WINDOWS_MSI
 
 LINUX_AMD64_VERSION=v0.77.2
+LINUX_AMD64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.2/velociraptor-v0.77.2-linux-amd64
 LINUX_AMD64_SHA256=6c4c23c466d892788ff56ddcd3a31f844e4c0d797ade454c5e2625eb9e427077
 LINUX_ARM64_VERSION=v0.77.2
+LINUX_ARM64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.2/velociraptor-v0.77.2-linux-arm64
 LINUX_ARM64_SHA256=54d36c23f374a572a4a60106d896e0e39bc6fcafd0d6150cf56aec6c49454ea0
 DARWIN_AMD64_VERSION=v0.77.2
+DARWIN_AMD64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.2/velociraptor-v0.77.2-darwin-amd64
 DARWIN_AMD64_SHA256=900efb29154939e6f594446096975439fc19c59fd74f5433d67bc15cacb4cd99
 DARWIN_ARM64_VERSION=v0.77.2
+DARWIN_ARM64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.2/velociraptor-v0.77.2-darwin-arm64
 DARWIN_ARM64_SHA256=3ec2df0c19726b92e27c51ec4b6239aee3e4e40425de39781859eb200987070e
 WINDOWS_EXE_VERSION=v0.77.2
+WINDOWS_EXE_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.2/velociraptor-v0.77.2-windows-amd64.exe
 WINDOWS_EXE_SHA256=686e4f5888fdd66d07ace3b6c1cbd7d2dd0d8d5fb4d3b5d905a7df3341dfb86f
 WINDOWS_MSI_VERSION=v0.77.2
+WINDOWS_MSI_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.2/velociraptor-v0.77.2-windows-amd64.msi
 WINDOWS_MSI_SHA256=7965d63d7c7434db425dba9dc7430f3e12c60e914017da9ac3617d0f3c9991e9

@@ -1,10 +1,9 @@
 name: upstream-check
 
-# Polls Velocidex/velociraptor releases. Velocidex tags releases by MINOR
-# version (v0.76); each PATCH (v0.76.5, v0.76.6, ...) is added as a new
-# asset to that same release. This workflow inspects asset names across
-# recent releases to find the newest patch per platform, then opens a PR
-# updating versions.env + binaries.lock if anything changed.
+# Polls Velocidex/velociraptor releases. Velocidex has used both minor release
+# tags (v0.76 containing v0.76.5 assets) and full patch tags (v0.77.2).
+# This workflow records each asset's exact API-provided URL, version, and
+# checksum so the image build does not have to infer the release layout.
 #
 # For platforms upstream hasn't published yet at the newest patch, the
 # best-newest-patch logic naturally pins that platform to its own most
@@ -31,6 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UPSTREAM_REPO: Velocidex/velociraptor
+      TRIAGE_REPO: Velocidex/velociraptor-triage-collector
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Order matters only for printing.
       ASSET_KEYS: "LINUX_AMD64 LINUX_ARM64 DARWIN_AMD64 DARWIN_ARM64 WINDOWS_EXE WINDOWS_MSI"
@@ -99,6 +99,23 @@ jobs:
             rm -f "$tmp"
           done
 
+          # Pin generated Triage definitions to the immutable head commit of
+          # the official gh-pages branch. This branch contains compiled YAMLs.
+          TRIAGE_COMMIT="$(
+            gh api -H "Accept: application/vnd.github+json" \
+              "repos/${TRIAGE_REPO}/branches/gh-pages" --jq '.commit.sha'
+          )"
+          TRIAGE_BASE="https://raw.githubusercontent.com/${TRIAGE_REPO}/${TRIAGE_COMMIT}/docs"
+          TRIAGE_LINUX_UAC_URL="${TRIAGE_BASE}/linux.triage.uac/Linux.Triage.UAC.yaml"
+          TRIAGE_WINDOWS_TARGETS_URL="${TRIAGE_BASE}/windows.triage.targets/Windows.Triage.Targets.yaml"
+
+          tmp="$(mktemp)"
+          curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$TRIAGE_LINUX_UAC_URL"
+          TRIAGE_LINUX_UAC_SHA256="$(sha256sum "$tmp" | awk '{print $1}')"
+          curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$TRIAGE_WINDOWS_TARGETS_URL"
+          TRIAGE_WINDOWS_TARGETS_SHA256="$(sha256sum "$tmp" | awk '{print $1}')"
+          rm -f "$tmp"
+
           # Pick the main VELOX_VERSION as the newest patch across all platforms.
           NEW_VELOX_VERSION="$(printf '%s\n' "${VERSION[@]}" | sort -V -r | head -n1)"
           echo "new_velox_version=${NEW_VELOX_VERSION}"
@@ -111,9 +128,8 @@ jobs:
             echo "# read by .github/workflows/build-publish.yml."
             echo "#"
             echo "# VELOX_VERSION  = Velocidex patch version this image is built from"
-            echo "#                  (filename component, e.g. v0.76.5). The minor tag the"
-            echo "#                  asset lives under (v0.76) is derived by stripping the"
-            echo "#                  patch suffix."
+            echo "#                  (filename component, e.g. v0.77.2). Exact per-asset"
+            echo "#                  release URLs are recorded in binaries.lock."
             echo "# IMAGE_REVISION = our own re-release counter (bump when we fix something"
             echo "#                  on our side against the same upstream version)"
             echo "VELOX_VERSION=${NEW_VELOX_VERSION}"
@@ -124,7 +140,7 @@ jobs:
             echo "# Per-asset version pins. Managed by upstream-check.yml."
             echo "#"
             echo "# Each asset records the Velocidex patch version it should be pulled from"
-            echo "# (e.g. v0.76.5) and the expected sha256."
+            echo "# (e.g. v0.77.2), its exact API-provided URL, and expected sha256."
             echo "#"
             echo "# Normally every asset matches VELOX_VERSION in versions.env. When upstream"
             echo "# hasn't published a given platform for that patch yet, upstream-check walks"
@@ -132,14 +148,29 @@ jobs:
             echo "# earlier minor releases) and pins that asset to the most recent one that"
             echo "# does have it."
             echo "#"
-            echo "# Format: <key>_VERSION=<patch-tag>   <key>_SHA256=<hex>"
+            echo "# Format: <key>_VERSION=<patch-tag>, <key>_URL=<url>, <key>_SHA256=<hex>"
             echo "# Keys: LINUX_AMD64, LINUX_ARM64, DARWIN_AMD64, DARWIN_ARM64, WINDOWS_EXE, WINDOWS_MSI"
             echo ""
             for key in $ASSET_KEYS; do
               echo "${key}_VERSION=${VERSION[$key]}"
+              echo "${key}_URL=${URL[$key]}"
               echo "${key}_SHA256=${SHA256[$key]}"
             done
           } > .upstream-check/binaries.lock.new
+
+          {
+            echo "# Bundled custom artifact pins. Managed by upstream-check.yml."
+            echo "#"
+            echo "# Generated definitions come from the official Velocidex Triage project's"
+            echo "# GitHub Pages branch. URLs contain an immutable commit and every definition"
+            echo "# is verified during the image build."
+            echo ""
+            echo "TRIAGE_SOURCE_COMMIT=${TRIAGE_COMMIT}"
+            echo "TRIAGE_LINUX_UAC_URL=${TRIAGE_LINUX_UAC_URL}"
+            echo "TRIAGE_LINUX_UAC_SHA256=${TRIAGE_LINUX_UAC_SHA256}"
+            echo "TRIAGE_WINDOWS_TARGETS_URL=${TRIAGE_WINDOWS_TARGETS_URL}"
+            echo "TRIAGE_WINDOWS_TARGETS_SHA256=${TRIAGE_WINDOWS_TARGETS_SHA256}"
+          } > .upstream-check/artifacts.lock.new
 
       - name: Compare against repo state and decide revision
         id: decide
@@ -163,14 +194,31 @@ jobs:
             BINARIES_CHANGED=true
           fi
 
+          if diff -q \
+              <(grep -vE '^\s*(#|$)' artifacts.lock | sort) \
+              <(grep -vE '^\s*(#|$)' .upstream-check/artifacts.lock.new | sort) \
+              >/dev/null; then
+            ARTIFACTS_CHANGED=false
+          else
+            ARTIFACTS_CHANGED=true
+          fi
+
           FORCE="${{ inputs.force_revision_bump }}"
 
           if [ "$OLD_VELOX_VERSION" != "$NEW_VELOX_VERSION" ]; then
             REASON="upstream version bump: ${OLD_VELOX_VERSION} -> ${NEW_VELOX_VERSION}"
             NEW_IMAGE_REVISION=1
             CHANGED=true
+          elif [ "$BINARIES_CHANGED" = "true" ] && [ "$ARTIFACTS_CHANGED" = "true" ]; then
+            REASON="upstream re-published binaries and updated bundled Triage artifacts for ${NEW_VELOX_VERSION}"
+            NEW_IMAGE_REVISION=$(( OLD_IMAGE_REVISION + 1 ))
+            CHANGED=true
           elif [ "$BINARIES_CHANGED" = "true" ]; then
             REASON="upstream re-published one or more binaries for ${NEW_VELOX_VERSION}"
+            NEW_IMAGE_REVISION=$(( OLD_IMAGE_REVISION + 1 ))
+            CHANGED=true
+          elif [ "$ARTIFACTS_CHANGED" = "true" ]; then
+            REASON="updated bundled Velocidex Triage artifacts"
             NEW_IMAGE_REVISION=$(( OLD_IMAGE_REVISION + 1 ))
             CHANGED=true
           elif [ "$FORCE" = "true" ]; then
@@ -199,6 +247,7 @@ jobs:
           set -euo pipefail
           mv .upstream-check/versions.env.new versions.env
           mv .upstream-check/binaries.lock.new binaries.lock
+          mv .upstream-check/artifacts.lock.new artifacts.lock
           rm -rf .upstream-check releases.json all-assets.tsv
 
       - name: Open PR

@@ -76,6 +76,15 @@ done
 $ready || { echo "Server did not become ready within ${READY_TIMEOUT_S}s."; exit 1; }
 echo "Server reports frontend ready."
 
+echo "--- Verify bundled Triage artifacts ---"
+for artifact in Linux.Triage.UAC Windows.Triage.Targets; do
+  docker exec "$SERVER" ./velociraptor \
+    --config server.config.yaml \
+    --definitions /opt/velociraptor/artifacts \
+    artifacts show "$artifact" >/dev/null
+  echo "  Found $artifact"
+done
+
 echo "--- Probe GUI port (unauthenticated, expect 401) ---"
 gui_code="$(docker run --rm --network "$NET" curlimages/curl:latest \
   -ksS --max-time 10 -o /dev/null -w '%{http_code}' \
