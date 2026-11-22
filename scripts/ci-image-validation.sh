@@ -150,7 +150,13 @@ traits="$(api_get /api/v1/GetUserUITraits)"
 echo "  GUI 200, API user_type USER_TYPE_ADMIN"
 
 echo "--- Bundled and operator-supplied artifacts are loaded by the server ---"
-for artifact in Linux.Triage.UAC Windows.Triage.Targets CI.Extra.Artifact; do
+for artifact in \
+  Linux.Triage.UAC Windows.Triage.Targets \
+  Windows.Hayabusa.Rules Windows.Hayabusa.Monitoring \
+  Windows.Sigma.Triage Windows.Sigma.BaseVQL Windows.Sigma.Base Windows.Sigma.BaseEvents \
+  Linux.Sigma.Triage Linux.Sigma.Base MacOS.Sigma.Triage MacOS.Sigma.BaseVQL \
+  CI.Extra.Artifact
+do
   body="$(api_get "/api/v1/GetArtifactFile?name=${artifact}" | jq -r '.artifact // empty')"
   # Unknown names return a generic template; known ones a "Custom." copy.
   [[ "$body" == "name: Custom.${artifact}"$'\n'* ]] || fail "server has no artifact $artifact"

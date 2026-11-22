@@ -1,6 +1,6 @@
 name: release-tag
 
-# Publishes every merged release: when versions.env changes on master (an
+# Publishes every merged release: when versions.env changes on main (an
 # upstream bump, or an IMAGE_REVISION bump for our own fixes), tag the merge
 # commit and run the release build for that tag.
 #
@@ -10,7 +10,7 @@ name: release-tag
 on:
   push:
     branches:
-      - master
+      - main
     paths:
       - versions.env
   workflow_dispatch:

@@ -39,6 +39,7 @@ jobs:
     env:
       UPSTREAM_REPO: Velocidex/velociraptor
       TRIAGE_REPO: Velocidex/velociraptor-triage-collector
+      SIGMA_REPO: Velocidex/velociraptor-sigma-rules
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Order matters only for printing.
       ASSET_KEYS: "LINUX_AMD64 LINUX_ARM64 LINUX_AMD64_MUSL DARWIN_AMD64 DARWIN_ARM64 WINDOWS_EXE WINDOWS_MSI"
@@ -137,6 +138,15 @@ jobs:
           TRIAGE_LINUX_UAC_SHA256_NEW="$TRIAGE_LINUX_UAC_SHA256"
           TRIAGE_WINDOWS_TARGETS_SHA256_NEW="$TRIAGE_WINDOWS_TARGETS_SHA256"
 
+          # Velocidex Sigma / Hayabusa pack: pin the zip at the gh-pages head.
+          SIGMA_COMMIT="$(
+            gh api -H "Accept: application/vnd.github+json" \
+              "repos/${SIGMA_REPO}/branches/gh-pages" --jq '.commit.sha'
+          )"
+          SIGMA_ARTIFACTS_URL_NEW="https://raw.githubusercontent.com/${SIGMA_REPO}/${SIGMA_COMMIT}/artifacts/Velociraptor.Sigma.Artifacts.zip"
+          curl -fsSL --retry 3 --retry-delay 2 -o sigma-new.zip "$SIGMA_ARTIFACTS_URL_NEW"
+          SIGMA_ARTIFACTS_SHA256_NEW="$(sha256sum sigma-new.zip | awk '{print $1}')"
+
           # The image version is the server's version: both Linux server
           # binaries must be on the same patch. Until upstream has published
           # both, wait instead of building a mixed image.
@@ -168,17 +178,28 @@ jobs:
             fi
           fi
 
-          # Hash the Triage definitions without their generated "Commit <sha> on
-          # <time>" line, so a rebuild upstream that changes nothing else does
-          # not cause an image revision.
+          # Hash the bundled definitions without their generated build stamps
+          # (Triage: "Commit <sha> on
+          # <time>"), so a rebuild upstream that changes nothing else does not
+          # cause an image revision.
           norm_sha() { curl -fsSL --retry 3 --retry-delay 2 "$1" | grep -vE '^[[:space:]]*Commit [0-9a-f]{7,40} on [0-9TZ:.-]+[[:space:]]*$' | sha256sum | awk '{print $1}'; }
+          # Same for the bundled Sigma definitions ("This artifact was built on
+          # <time>"); only the files we bundle are compared.
+          norm_sigma() {
+            local zip="$1" pair
+            for pair in $SIGMA_ARTIFACTS; do
+              unzip -p "$zip" "output/${pair%%:*}.yaml"
+            done | grep -vE '^[[:space:]]*This artifact was built on ' | sha256sum | awk '{print $1}'
+          }
           # shellcheck disable=SC1091
           . ./artifacts.lock
+          curl -fsSL --retry 3 --retry-delay 2 -o sigma-old.zip "$SIGMA_ARTIFACTS_URL"
           if [ "$(norm_sha "$TRIAGE_LINUX_UAC_URL")" = "$(norm_sha "$TRIAGE_LINUX_UAC_URL_NEW")" ] && \
-             [ "$(norm_sha "$TRIAGE_WINDOWS_TARGETS_URL")" = "$(norm_sha "$TRIAGE_WINDOWS_TARGETS_URL_NEW")" ]; then
-            echo "triage_content_changed=false" >> "$GITHUB_OUTPUT"
+             [ "$(norm_sha "$TRIAGE_WINDOWS_TARGETS_URL")" = "$(norm_sha "$TRIAGE_WINDOWS_TARGETS_URL_NEW")" ] && \
+             [ "$(norm_sigma sigma-old.zip)" = "$(norm_sigma sigma-new.zip)" ]; then
+            echo "artifacts_content_changed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "triage_content_changed=true" >> "$GITHUB_OUTPUT"
+            echo "artifacts_content_changed=true" >> "$GITHUB_OUTPUT"
           fi
           TRIAGE_LINUX_UAC_URL="$TRIAGE_LINUX_UAC_URL_NEW"
           TRIAGE_WINDOWS_TARGETS_URL="$TRIAGE_WINDOWS_TARGETS_URL_NEW"
@@ -238,7 +259,17 @@ jobs:
             echo "TRIAGE_LINUX_UAC_SHA256=${TRIAGE_LINUX_UAC_SHA256}"
             echo "TRIAGE_WINDOWS_TARGETS_URL=${TRIAGE_WINDOWS_TARGETS_URL}"
             echo "TRIAGE_WINDOWS_TARGETS_SHA256=${TRIAGE_WINDOWS_TARGETS_SHA256}"
+            echo ""
+            echo "# Velocidex Sigma / Hayabusa artifact pack (gh-pages build of"
+            echo "# Velocidex/velociraptor-sigma-rules), pinned to an immutable commit. The"
+            echo "# Dockerfile extracts the curated definitions listed in SIGMA_ARTIFACTS"
+            echo "# (\"<file in the pack>:<artifact name>\"; edit this list to bundle more)."
+            echo "SIGMA_ARTIFACTS=\"${SIGMA_ARTIFACTS}\""
+            echo "SIGMA_SOURCE_COMMIT=${SIGMA_COMMIT}"
+            echo "SIGMA_ARTIFACTS_URL=${SIGMA_ARTIFACTS_URL_NEW}"
+            echo "SIGMA_ARTIFACTS_SHA256=${SIGMA_ARTIFACTS_SHA256_NEW}"
           } > .upstream-check/artifacts.lock.new
+          rm -f sigma-old.zip sigma-new.zip
 
       - name: Compare against repo state and decide revision
         id: decide
@@ -263,7 +294,7 @@ jobs:
           fi
 
           # Triage pins only matter when the definitions' content changed.
-          if [ "${{ steps.resolve.outputs.triage_content_changed }}" != "true" ]; then
+          if [ "${{ steps.resolve.outputs.artifacts_content_changed }}" != "true" ]; then
             cp artifacts.lock .upstream-check/artifacts.lock.new
           fi
           if diff -q \
@@ -292,7 +323,7 @@ jobs:
             NEW_IMAGE_REVISION=1
             CHANGED=true
           elif [ "$BINARIES_CHANGED" = "true" ] && [ "$ARTIFACTS_CHANGED" = "true" ]; then
-            REASON="upstream re-published binaries and updated bundled Triage artifacts for ${NEW_VELOX_VERSION}"
+            REASON="upstream re-published binaries and updated bundled artifacts for ${NEW_VELOX_VERSION}"
             NEW_IMAGE_REVISION=$(( OLD_IMAGE_REVISION + 1 ))
             CHANGED=true
           elif [ "$BINARIES_CHANGED" = "true" ]; then
@@ -300,7 +331,7 @@ jobs:
             NEW_IMAGE_REVISION=$(( OLD_IMAGE_REVISION + 1 ))
             CHANGED=true
           elif [ "$ARTIFACTS_CHANGED" = "true" ]; then
-            REASON="updated bundled Velocidex Triage artifacts"
+            REASON="updated bundled Velocidex Triage / Sigma artifacts"
             NEW_IMAGE_REVISION=$(( OLD_IMAGE_REVISION + 1 ))
             CHANGED=true
           elif [ "$FORCE" = "true" ]; then

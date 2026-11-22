@@ -4,7 +4,7 @@
 
 # Velociraptor (Server) in Docker
 
-Run the [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) server in a container with sensible defaults, HTTPS, and prebuilt client repacks.
+Run the [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) server in a container with sensible defaults, HTTPS, prebuilt client repacks, and bundled Triage, Sigma and Hayabusa artifacts.
 
 - **Architectures:** `linux/amd64`, `linux/arm64`
 - **Ports:** `8000` (client/ingest), `8889` (GUI), `8001` (gRPC API), `8003` (Prometheus)
@@ -13,7 +13,7 @@ Run the [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) serv
 - **Non-root:** the entrypoint prepares the volume, then runs the server as uid/gid `10001`
 - **Verified inputs:** every Velociraptor binary is checked against its pinned SHA-256 and its Velocidex release signature at build time
 
-On start, the container prints a small build banner (version, arch, base image, git commit, build date) so you can confirm what you pulled.
+On start, the container prints a small build banner (version, arch, base image, git commit, build date, and the pinned Triage and Sigma commits) so you can confirm what you pulled.
 
 ---
 
@@ -175,7 +175,7 @@ docker run -it --rm \
 
 ### 4) Load your own artifacts
 
-Put `*.yaml` artifact definitions in `./velodata/artifacts/` (or mount a directory and set `VELOX_EXTRA_ARTIFACTS_DIR`). They are loaded together with the bundled Triage artifacts on every start; the banner shows how many were found.
+Put `*.yaml` artifact definitions in `./velodata/artifacts/` (or mount a directory and set `VELOX_EXTRA_ARTIFACTS_DIR`). They are loaded together with the bundled artifacts on every start; the banner shows how many were found.
 
 ---
 
@@ -228,14 +228,27 @@ If a specific upstream client binary isn’t available, the repack step is skipp
 
 ---
 
-## Bundled Triage Artifacts
+## Bundled Artifacts
 
-Every image includes these official [Velocidex Triage Artifacts](https://triage.velocidex.com/docs/triage_artifacts/):
+Every image includes these official Velocidex artifacts, ready to collect or hunt with from the GUI:
 
-- `Linux.Triage.UAC` — Linux triage driven by the [UAC (Unix-like Artifacts Collector)](https://github.com/tclahr/uac) artifact definitions
+**[Triage](https://triage.velocidex.com/docs/triage_artifacts/)** (file collection):
+
 - `Windows.Triage.Targets` — Windows triage driven by the [KapeFiles](https://github.com/EricZimmerman/KapeFiles) target definitions
+- `Linux.Triage.UAC` — Linux triage driven by the [UAC (Unix-like Artifacts Collector)](https://github.com/tclahr/uac) artifact definitions
 
-The generated definitions are pinned to an immutable upstream commit, verified by SHA-256 during the image build, validated against the bundled Velociraptor binary, and loaded on every server start. The daily upstream workflow tracks both definitions and opens a revision PR when they change.
+**[Sigma and Hayabusa](https://sigma.velocidex.com/)** (detection):
+
+- `Windows.Hayabusa.Rules` — the [Hayabusa](https://github.com/Yamato-Security/hayabusa) Sigma ruleset compiled for Velociraptor: hunt Windows event logs for suspicious activity
+- `Windows.Hayabusa.Monitoring` — the same rules as a client event (real-time) artifact
+- `Windows.Sigma.Triage`, `Linux.Sigma.Triage`, `MacOS.Sigma.Triage` — curated Sigma triage rules per platform
+- Their base artifacts: `Windows.Sigma.Base`, `Windows.Sigma.BaseEvents`, `Windows.Sigma.BaseVQL`, `Linux.Sigma.Base`, `MacOS.Sigma.BaseVQL`
+
+All definitions are pinned to immutable upstream commits (`artifacts.lock`), verified by SHA-256 during the build, checked with the bundled Velociraptor binary, and loaded on every server start (CI also checks that the running server has every one of them). The daily upstream workflow tracks both projects. It opens a revision PR when the definitions really change; rebuilds that only update an embedded build stamp are ignored.
+
+Two known upstream lint issues are tolerated at build time, each matched exactly: the Triage artifacts don't yet declare `FILESYSTEM_WRITE`, and `artifacts verify` cannot lex the 1.1 MB compressed rule literal in `Windows.Hayabusa.Rules`. The server loads and runs both fine.
+
+To bundle more artifacts from the Sigma pack, add `<file in the pack>:<artifact name>` entries to `SIGMA_ARTIFACTS` in `artifacts.lock` (file names as in [`Velociraptor.Sigma.Artifacts.zip`](https://sigma.velocidex.com/)). For anything else, use `./velodata/artifacts/` (see example 4).
 
 ---
 
@@ -244,7 +257,7 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 - **Change the default credentials** on first run; prefer `VELOX_DEFAULT_PASSWORD_FILE` so the password is not stored in container metadata. (While the bootstrap user is created, the password is briefly on the `velociraptor user add` command line: Velociraptor cannot read it from stdin.)
 - The server runs as an unprivileged user; `server.config.yaml` and its backups are `0600`.
 - Release binaries are verified against pinned SHA-256 values and the Velocidex release signing key (`0572 F28B 4EF1 9A04 3F4C BBE0 B22A 7FB1 9CB6 CFA1`, `keys/velocidex-release.asc`).
-- TLS is **self-signed** by default; rotate keys/certificates as needed from the server.
+- TLS is **self-signed** by default. The frontend certificate is rotated automatically before it expires (`VELOX_CERT_RENEW_DAYS`); the CA is kept, so clients keep trusting the server.
 - Expose GUI/API only where appropriate; consider a reverse proxy or firewall rules.
 - The examples publish the gRPC API (`8001`) and Prometheus metrics (`8003`) on `127.0.0.1` only. The metrics endpoint has no authentication; publish it more widely only behind a firewall or to a trusted scrape network.
 
@@ -257,11 +270,14 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 - `Permission denied` on a bind mount after upgrading? The volume now belongs to uid `10001`. Set `VELOX_UID`/`VELOX_GID` to your host user's ids, or `VELOX_RUN_AS_ROOT=true` for the old behavior.
 - GUI pages load but every action fails with HTTP 503 (older images, configs created before this fix)? The GUI calls its own API through `API.hostname`, which defaulted to the public hostname. New configs, and `reconcile`-mode configs on start, set it to `127.0.0.1`; for `generated`/`external` configs set `API.hostname: 127.0.0.1` yourself.
 
+---
+
 ## Upgrading from earlier images
 
 - Existing volumes keep working: on first start the entrypoint changes ownership of the data directory to the server account and tightens `server.config.yaml` to `0600`. Large datastores take a moment the first time; later starts only touch files with the wrong owner.
 - `VELOX_FRONTEND_PORT` and `VELOX_GUI_PORT` now only set the public ports in URLs (as documented). If you used them to change the port the server *listens* on, set `VELOX_FRONTEND_BIND_PORT`/`VELOX_GUI_BIND_PORT` instead. Existing listen ports in a persisted config are left as they are.
 - `./velociraptor` in the volume is now a link to the image's binary.
+- The bundled Sigma and Hayabusa artifacts appear automatically; nothing to configure.
 
 ---
 
@@ -269,7 +285,7 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 
 - `:latest` — the newest Velociraptor version released here (never moves back to an older version)
 - `:<velociraptor-version>` — e.g. `:0.77.3`. Follows image revisions of that upstream release.
-- `:<velociraptor-version>-<revision>` — e.g. `:0.77.3-2`. Never changes once published.
+- `:<velociraptor-version>-<revision>` — e.g. `:0.77.3-3`. Never changes once published.
 - `:<minor>` — e.g. `:0.77`. The newest patch of that minor line.
 - `:sha-<short>` — the commit the image was built from.
 - Multi-arch manifests are published for **amd64** and **arm64**
@@ -278,16 +294,16 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 
 ## Build & Release Flow
 
-- **`upstream-check.yml`** (daily) polls the Velocidex releases and the official Triage artifact project:
+- **`upstream-check.yml`** (daily) polls the Velocidex releases and the official Triage and Sigma artifact projects:
   - The image version is the version of the two Linux server binaries. If they differ, or a new release is under 48 hours old and still missing assets, it waits.
-  - It refuses to "bump" to an older version, ignores Triage rebuilds that only change the embedded commit line, and keeps a single bump PR (`upstream-check/bump`) up to date.
-  - Every version bump runs `scripts/config-drift.sh` against the old and new server binaries. It compares the config each release generates, and checks that the new release still loads a config made by the old one. The PR then lists settings that were added or removed and defaults that changed, and gets a `config-changes` label; the report is also committed in the PR as `docs/config-drift/<version>.md` (`config-incompatible` if the old config no longer loads). Existing installs keep their persisted config, so these are the changes to review for reconcile mode or upgrade notes. Run it on demand with the **config-drift** workflow, or locally (see the script header).
+  - It refuses to "bump" to an older version, ignores artifact rebuilds that only change an embedded build stamp, and keeps a single bump PR (`upstream-check/bump`) up to date.
+  - **Server config changes:** every version bump runs `scripts/config-drift.sh` on the old and new server binaries. It compares the config each release generates, and checks that the new release still loads a config made by the old one (keys, nonces and build stamps are masked). The report goes into the PR description and is committed as `docs/config-drift/<version>.md`. The PR is labeled `config-changes` when settings were added or removed or defaults changed, and `config-incompatible` when the old config no longer loads. Existing installs keep their persisted config, so these are the changes to review for reconcile mode or upgrade notes. Run the same check on demand with the **config-drift** workflow, or locally (see the script header).
   - Each bump is validated by a `build-publish` dry run on that branch (PRs opened with `GITHUB_TOKEN` get no PR checks). Failures open an issue, and the workflow keeps its own schedule from being disabled.
 - **`build-publish.yml`** builds natively on amd64 and arm64 runners and runs the full validation on both:
-  - `scripts/ci-image-validation.sh`: unprivileged server, private config, healthcheck, GUI and GUI API login, bundled and extra artifacts loaded, all 11 client bundles, `.deb`/`.rpm` installs, a repacked client enrolling and completing a collection, and the musl client on Alpine.
+  - `scripts/ci-image-validation.sh`: unprivileged server, private config, healthcheck, GUI and GUI API login, all 12 bundled artifacts and an extra one loaded by the running server, all 11 client bundles, `.deb`/`.rpm` installs, a repacked client enrolling and completing a collection, and the musl client on Alpine.
   - `scripts/ci-config-modes-validation.sh`: config modes, secrets, invalid input, interrupted first start, reverse-proxy URLs, and real upgrades from published `0.76.5` and `0.77.2` images in which an enrolled client keeps its identity.
-  - Publishing (a `v*` tag, or a manual run with `dry_run` unchecked on `master` or a tag) pushes each architecture by digest, validates that pushed image, and only then creates the multi-arch tags.
-- **`release-tag.yml`** runs when `versions.env` changes on `master`: it tags the merge commit (`v<version>`, or `v<version>-<revision>` for revisions after the first) and starts the release build. Merging a bump PR, or a PR that raises `IMAGE_REVISION`, is all it takes to publish.
+  - Publishing (a `v*` tag, or a manual run with `dry_run` unchecked on `main` or a tag) pushes each architecture by digest, validates that pushed image, and only then creates the multi-arch tags.
+- **`release-tag.yml`** runs when `versions.env` changes on `main`: it tags the merge commit (`v<version>`, or `v<version>-<revision>` for revisions after the first) and starts the release build. Merging a bump PR, or a PR that raises `IMAGE_REVISION`, is all it takes to publish.
 - Dependabot keeps the SHA-pinned actions and the digest-pinned base image current.
 
 Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
