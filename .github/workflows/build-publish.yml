@@ -4,12 +4,24 @@ on:
   push:
     tags:
       - "v*"
+  # Every PR (including upstream-check bump PRs) gets the full amd64
+  # build + validation. The publish job never runs for pull requests.
+  pull_request:
+    branches:
+      - master
   workflow_dispatch:
     inputs:
       dry_run:
         description: "Build + validate only, do not push"
         type: boolean
         default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-publish-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE: docker.io/xboarder56/velociraptor
@@ -54,18 +66,21 @@ jobs:
             echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "VELOX_VERSION_LINUX_AMD64=${LINUX_AMD64_VERSION}"
             echo "VELOX_VERSION_LINUX_ARM64=${LINUX_ARM64_VERSION}"
+            echo "VELOX_VERSION_LINUX_AMD64_MUSL=${LINUX_AMD64_MUSL_VERSION}"
             echo "VELOX_VERSION_DARWIN_AMD64=${DARWIN_AMD64_VERSION}"
             echo "VELOX_VERSION_DARWIN_ARM64=${DARWIN_ARM64_VERSION}"
             echo "VELOX_VERSION_WINDOWS_EXE=${WINDOWS_EXE_VERSION}"
             echo "VELOX_VERSION_WINDOWS_MSI=${WINDOWS_MSI_VERSION}"
             echo "VELOX_URL_LINUX_AMD64=${LINUX_AMD64_URL}"
             echo "VELOX_URL_LINUX_ARM64=${LINUX_ARM64_URL}"
+            echo "VELOX_URL_LINUX_AMD64_MUSL=${LINUX_AMD64_MUSL_URL}"
             echo "VELOX_URL_DARWIN_AMD64=${DARWIN_AMD64_URL}"
             echo "VELOX_URL_DARWIN_ARM64=${DARWIN_ARM64_URL}"
             echo "VELOX_URL_WINDOWS_EXE=${WINDOWS_EXE_URL}"
             echo "VELOX_URL_WINDOWS_MSI=${WINDOWS_MSI_URL}"
             echo "VELOX_SHA256_LINUX_AMD64=${LINUX_AMD64_SHA256}"
             echo "VELOX_SHA256_LINUX_ARM64=${LINUX_ARM64_SHA256}"
+            echo "VELOX_SHA256_LINUX_AMD64_MUSL=${LINUX_AMD64_MUSL_SHA256}"
             echo "VELOX_SHA256_DARWIN_AMD64=${DARWIN_AMD64_SHA256}"
             echo "VELOX_SHA256_DARWIN_ARM64=${DARWIN_ARM64_SHA256}"
             echo "VELOX_SHA256_WINDOWS_EXE=${WINDOWS_EXE_SHA256}"
@@ -123,11 +138,15 @@ jobs:
       - name: Validate config modes and secret files
         env:
           IMAGE: velociraptor:smoke
+          # Real upgrade test from the currently published image.
+          LEGACY_IMAGE: docker.io/xboarder56/velociraptor:latest
         run: ./scripts/ci-config-modes-validation.sh
 
   publish:
     needs: test
-    if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
+    # Publish only for tag pushes, or manual runs with dry_run unchecked.
+    # Never for pull_request events (inputs.dry_run is empty there).
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.dry_run != true) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

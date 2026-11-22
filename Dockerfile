@@ -12,6 +12,7 @@ ARG BASE_IMAGE
 # published an asset for the main VELOX_VERSION yet.
 ARG VELOX_VERSION_LINUX_AMD64=${VELOX_VERSION}
 ARG VELOX_VERSION_LINUX_ARM64=${VELOX_VERSION}
+ARG VELOX_VERSION_LINUX_AMD64_MUSL=${VELOX_VERSION}
 ARG VELOX_VERSION_DARWIN_AMD64=${VELOX_VERSION}
 ARG VELOX_VERSION_DARWIN_ARM64=${VELOX_VERSION}
 ARG VELOX_VERSION_WINDOWS_EXE=${VELOX_VERSION}
@@ -22,6 +23,7 @@ ARG VELOX_VERSION_WINDOWS_MSI=${VELOX_VERSION}
 # Empty values retain convenient version-only local builds.
 ARG VELOX_URL_LINUX_AMD64=
 ARG VELOX_URL_LINUX_ARM64=
+ARG VELOX_URL_LINUX_AMD64_MUSL=
 ARG VELOX_URL_DARWIN_AMD64=
 ARG VELOX_URL_DARWIN_ARM64=
 ARG VELOX_URL_WINDOWS_EXE=
@@ -30,6 +32,7 @@ ARG VELOX_URL_WINDOWS_MSI=
 # Optional expected sha256 per asset. Empty = skip verification.
 ARG VELOX_SHA256_LINUX_AMD64=
 ARG VELOX_SHA256_LINUX_ARM64=
+ARG VELOX_SHA256_LINUX_AMD64_MUSL=
 ARG VELOX_SHA256_DARWIN_AMD64=
 ARG VELOX_SHA256_DARWIN_ARM64=
 ARG VELOX_SHA256_WINDOWS_EXE=
@@ -53,15 +56,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
 COPY ./entrypoint /entrypoint
 RUN chmod +x /entrypoint && \
     apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl jq yq dpkg-dev rpm openssl && \
+    apt-get install -y --no-install-recommends ca-certificates curl gzip jq yq dpkg-dev rpm openssl && \
     mkdir -p /opt/velociraptor/linux /opt/velociraptor/mac /opt/velociraptor/windows && \
     rm -rf /var/lib/apt/lists/*
 
-# Velocidex has used two release layouts:
-#   * Current: full patch tag (v0.77.2) and full patch asset filename.
+# Velocidex has used several release layouts:
+#   * v0.77.3+: full patch tag, binaries published gzipped (*.gz); MSI raw.
+#   * v0.77.0-v0.77.2: full patch tag, raw binaries.
 #   * Legacy: minor tag (v0.76) with patch assets attached to it.
 # CI supplies the exact URL recorded by upstream-check. For version-only local
-# builds, fetch_asset tries the current layout and then the legacy layout.
+# builds, fetch_asset tries the current layouts and then the legacy layout.
+# The sha256 (when given) is of the downloaded file, i.e. the .gz for gzipped
+# assets, which matches the digest GitHub publishes for the release asset.
 # Server binary: must match the image's TARGETARCH and must succeed.
 # Client binaries (cross-arch + mac + windows): tolerant; missing assets
 # are skipped here and handled by the entrypoint repack logic.
@@ -69,31 +75,36 @@ RUN set -eux; \
     fetch_asset() { \
       local pinned_url="$1" version="$2" suffix="$3" out="$4" required="$5" expect_sha="$6"; \
       local asset="velociraptor-${version}-${suffix}"; \
-      local primary_url legacy_url url actual_sha; \
+      local urls url actual_sha dl; \
       if [ -n "$pinned_url" ]; then \
-        primary_url="$pinned_url"; \
-        legacy_url=""; \
+        urls="$pinned_url"; \
       else \
-        primary_url="${BASE}/${version}/${asset}"; \
-        legacy_url="${BASE}/${version%.*}/${asset}"; \
-        if [ "$legacy_url" = "$primary_url" ]; then legacy_url=""; fi; \
+        urls="${BASE}/${version}/${asset} ${BASE}/${version}/${asset}.gz"; \
+        if [ "${version%.*}" != "$version" ]; then \
+          urls="$urls ${BASE}/${version%.*}/${asset}"; \
+        fi; \
       fi; \
-      for url in "$primary_url" "$legacy_url"; do \
-        if [ -z "$url" ]; then continue; fi; \
+      for url in $urls; do \
         echo "  $url"; \
-        if curl -fL --retry 3 --retry-delay 2 "$url" -o "$out"; then \
+        dl="${out}.download"; \
+        if curl -fL --retry 3 --retry-delay 2 "$url" -o "$dl"; then \
           if [ -n "$expect_sha" ]; then \
-            actual_sha="$(sha256sum "$out" | awk '{print $1}')"; \
+            actual_sha="$(sha256sum "$dl" | awk '{print $1}')"; \
             if [ "$actual_sha" != "$expect_sha" ]; then \
-              echo "FATAL: sha256 mismatch for $out" >&2; \
+              echo "FATAL: sha256 mismatch for $url" >&2; \
               echo "  expected: $expect_sha" >&2; \
               echo "  actual:   $actual_sha" >&2; \
+              rm -f "$dl"; \
               return 1; \
             fi; \
           fi; \
+          case "$url" in \
+            *.gz) gzip -dc "$dl" > "$out"; rm -f "$dl" ;; \
+            *)    mv -f "$dl" "$out" ;; \
+          esac; \
           return 0; \
         fi; \
-        rm -f "$out"; \
+        rm -f "$dl"; \
       done; \
       if [ "$required" = "true" ]; then \
         echo "FATAL: required asset missing: $asset" >&2; \
@@ -106,6 +117,7 @@ RUN set -eux; \
     \
     LINUX_AMD64_V="${VELOX_VERSION_LINUX_AMD64}"; \
     LINUX_ARM64_V="${VELOX_VERSION_LINUX_ARM64}"; \
+    LINUX_AMD64_MUSL_V="${VELOX_VERSION_LINUX_AMD64_MUSL}"; \
     DARWIN_AMD64_V="${VELOX_VERSION_DARWIN_AMD64}"; \
     DARWIN_ARM64_V="${VELOX_VERSION_DARWIN_ARM64}"; \
     WINDOWS_EXE_V="${VELOX_VERSION_WINDOWS_EXE}"; \
@@ -127,6 +139,8 @@ RUN set -eux; \
                 /opt/velociraptor/linux/velociraptor_client_amd64 false "${VELOX_SHA256_LINUX_AMD64}"; \
     fetch_asset "${VELOX_URL_LINUX_ARM64}" "$LINUX_ARM64_V" linux-arm64 \
                 /opt/velociraptor/linux/velociraptor_client_arm64 false "${VELOX_SHA256_LINUX_ARM64}"; \
+    fetch_asset "${VELOX_URL_LINUX_AMD64_MUSL}" "$LINUX_AMD64_MUSL_V" linux-amd64-musl \
+                /opt/velociraptor/linux/velociraptor_client_amd64_musl false "${VELOX_SHA256_LINUX_AMD64_MUSL}"; \
     fetch_asset "${VELOX_URL_DARWIN_AMD64}" "$DARWIN_AMD64_V" darwin-amd64 \
                 /opt/velociraptor/mac/velociraptor_client_amd64 false "${VELOX_SHA256_DARWIN_AMD64}"; \
     fetch_asset "${VELOX_URL_DARWIN_ARM64}" "$DARWIN_ARM64_V" darwin-arm64 \
@@ -135,6 +149,9 @@ RUN set -eux; \
                 /opt/velociraptor/windows/velociraptor_client.exe false "${VELOX_SHA256_WINDOWS_EXE}"; \
     fetch_asset "${VELOX_URL_WINDOWS_MSI}" "$WINDOWS_MSI_V" windows-amd64.msi \
                 /opt/velociraptor/windows/velociraptor_client.msi false "${VELOX_SHA256_WINDOWS_MSI}"; \
+    for f in /opt/velociraptor/linux/* /opt/velociraptor/mac/* /opt/velociraptor/windows/*.exe; do \
+      if [ -s "$f" ]; then chmod +x "$f"; fi; \
+    done; \
     echo "Downloads done."
 
 # Bake checksums next to each present binary so the entrypoint can
@@ -144,6 +161,7 @@ RUN set -eux; \
     /opt/velociraptor/linux/velociraptor \
     /opt/velociraptor/linux/velociraptor_client_amd64 \
     /opt/velociraptor/linux/velociraptor_client_arm64 \
+    /opt/velociraptor/linux/velociraptor_client_amd64_musl \
     /opt/velociraptor/mac/velociraptor_client_amd64 \
     /opt/velociraptor/mac/velociraptor_client_arm64 \
     /opt/velociraptor/windows/velociraptor_client.exe \
@@ -156,6 +174,11 @@ RUN set -eux; \
 
 # Bundle official custom definitions as immutable, verified build inputs.
 # The frontend loads this directory on every start via --definitions.
+# Velociraptor v0.77.3 added a lint requiring artifacts that call tempfile()
+# to declare FILESYSTEM_WRITE. The upstream Triage definitions do not declare
+# it yet (they load and run fine). Keep the definitions byte-identical to the
+# pinned upstream files and tolerate only that exact lint; any other
+# verification error still fails the build.
 RUN set -eux; \
   fetch_definition() { \
     local url="$1" out="$2" expect_sha="$3" actual_sha; \
@@ -180,9 +203,24 @@ RUN set -eux; \
   fetch_definition "$TRIAGE_WINDOWS_TARGETS_URL" \
     /opt/velociraptor/artifacts/Windows.Triage.Targets.yaml \
     "$TRIAGE_WINDOWS_TARGETS_SHA256"; \
-  /opt/velociraptor/linux/velociraptor artifacts verify --builtin \
-    /opt/velociraptor/artifacts/Linux.Triage.UAC.yaml \
-    /opt/velociraptor/artifacts/Windows.Triage.Targets.yaml
+  if ! /opt/velociraptor/linux/velociraptor artifacts verify --builtin \
+      /opt/velociraptor/artifacts/Linux.Triage.UAC.yaml \
+      /opt/velociraptor/artifacts/Windows.Triage.Targets.yaml \
+      > /tmp/verify.log 2>&1; then \
+    cat /tmp/verify.log; \
+    if grep -E '^ERROR: ' /tmp/verify.log \
+        | grep -v -E "^ERROR: (Linux\.Triage\.UAC|Windows\.Triage\.Targets): \(0,0\) required_permissions: Add FILESYSTEM_WRITE to artifact's required_permissions or implied_permissions fields$" \
+        | grep -q .; then \
+      echo "FATAL: bundled artifact verification failed" >&2; \
+      exit 1; \
+    fi; \
+    if ! grep -q -E '^ERROR: ' /tmp/verify.log; then \
+      echo "FATAL: artifact verification failed without reporting errors" >&2; \
+      exit 1; \
+    fi; \
+    echo "WARNING: tolerated known upstream FILESYSTEM_WRITE lint in Triage definitions"; \
+  fi; \
+  rm -f /tmp/verify.log
 
 WORKDIR /velociraptor
 

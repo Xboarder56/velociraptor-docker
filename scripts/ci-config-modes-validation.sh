@@ -298,4 +298,42 @@ if docker run --rm \
 fi
 grep -q 'invalid VELOX_CONFIG_MODE' "$TEST_ROOT/invalid-mode.log"
 
+echo "--- Special characters are stored literally (generate + reconcile) ---"
+QUOTE_DATA="$TEST_ROOT/quote-data"
+QUOTE_LOG_INITIAL='./logs "initial" \ dir'
+QUOTE_LOG_UPDATED='./logs "updated" \ $(id) dir'
+QUOTE_CONTAINER="velo-config-quote-$SUFFIX"
+start_server "$QUOTE_CONTAINER" "$QUOTE_DATA" \
+  -e VELOX_DEFAULT_PASSWORD=quote-password \
+  -e VELOX_LOG_DIR="$QUOTE_LOG_INITIAL" \
+  -e VELOX_START_SERVER_VERBOSE=false
+assert_config_value "$QUOTE_CONTAINER" /velociraptor/server.config.yaml '.Logging.output_directory' "$QUOTE_LOG_INITIAL"
+stop_server "$QUOTE_CONTAINER"
+QUOTE_RESTART_CONTAINER="velo-config-quote-restart-$SUFFIX"
+start_server "$QUOTE_RESTART_CONTAINER" "$QUOTE_DATA" \
+  -e VELOX_LOG_DIR="$QUOTE_LOG_UPDATED" \
+  -e VELOX_START_SERVER_VERBOSE=false
+assert_config_value "$QUOTE_RESTART_CONTAINER" /velociraptor/server.config.yaml '.Logging.output_directory' "$QUOTE_LOG_UPDATED"
+stop_server "$QUOTE_RESTART_CONTAINER"
+
+echo "--- Invalid typed settings fail before creating a config ---"
+BAD_PORT_DATA="$TEST_ROOT/bad-port-data"
+mkdir -p "$BAD_PORT_DATA"
+if docker run --rm \
+  -v "$BAD_PORT_DATA:/velociraptor" \
+  -e VELOX_GUI_PORT='8889, "x": 1' \
+  "$IMAGE" >"$TEST_ROOT/bad-port.log" 2>&1; then
+  fail 'entrypoint accepted a non-numeric port'
+fi
+grep -q 'VELOX_GUI_PORT must be a TCP port number' "$TEST_ROOT/bad-port.log"
+[ ! -e "$BAD_PORT_DATA/server.config.yaml" ] || fail 'invalid port left a partial server config'
+
+if docker run --rm \
+  -v "$BAD_PORT_DATA:/velociraptor" \
+  -e VELOX_DEBUG_DISABLED=maybe \
+  "$IMAGE" >"$TEST_ROOT/bad-bool.log" 2>&1; then
+  fail 'entrypoint accepted a non-boolean VELOX_DEBUG_DISABLED'
+fi
+grep -q "VELOX_DEBUG_DISABLED must be 'true' or 'false'" "$TEST_ROOT/bad-bool.log"
+
 echo "Config mode and secret-file validation: PASS"

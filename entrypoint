@@ -136,6 +136,31 @@ if [ -n "${VELOX_FRONTEND_SERVER_URL:-}" ]; then
   : "${VELOX_FRONTEND_SERVER_SCHEME:=$_scheme}"
 fi
 
+# Validate typed settings up front. Values are passed to jq/yq as typed
+# arguments (never spliced into JSON or filter text), so invalid input fails
+# here with a clear message instead of producing a broken config.
+validate_port() {
+  local name="$1" value="$2"
+  [ -z "$value" ] && return 0
+  if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
+    echo "FATAL: $name must be a TCP port number (1-65535), got: '$value'" >&2
+    exit 1
+  fi
+}
+validate_port VELOX_FRONTEND_PORT "$VELOX_FRONTEND_PORT"
+validate_port VELOX_GUI_PORT "$VELOX_GUI_PORT"
+validate_port VELOX_API_PORT "$VELOX_API_PORT"
+validate_port VELOX_MONITORING_PORT "$VELOX_MONITORING_PORT"
+
+VELOX_DEBUG_DISABLED="${VELOX_DEBUG_DISABLED,,}"
+case "$VELOX_DEBUG_DISABLED" in
+  ""|true|false) ;;
+  *)
+    echo "FATAL: VELOX_DEBUG_DISABLED must be 'true' or 'false', got: '$VELOX_DEBUG_DISABLED'" >&2
+    exit 1
+    ;;
+esac
+
 # Helper functions for hash state
 read_sha() {
   # Print first field if file exists/non-empty; else print nothing and exit 0
@@ -252,40 +277,42 @@ if [ ! -f "$CONFIG_FILE" ]; then
     VELOX_GUI_URL="${scheme}://${host}:${port}/app/index.html"
   fi
 
-  ./velociraptor config generate --merge '{
-    "Frontend":{
-      "public_path":"'"$PUBLIC_PATH"'",
-      "hostname":"'"${VELOX_FRONTEND_HOSTNAME:-localhost}"'",
-      "bind_address":"'"$BIND_ADDRESS"'",
-      "bind_port":'"${VELOX_FRONTEND_PORT:-8000}"'
-    },
-    "API":{
-      "bind_address":"'"$BIND_ADDRESS"'",
-      "bind_port":'"${VELOX_API_PORT:-8001}"'
-    },
-    "GUI":{
-      "bind_address":"'"$BIND_ADDRESS"'",
-      "bind_port":'"${VELOX_GUI_PORT:-8889}"',
-      "public_url":"'"$VELOX_GUI_URL"'"
-    },
-    "Monitoring":{
-      "bind_address":"'"$BIND_ADDRESS"'",
-      "bind_port":'"${VELOX_MONITORING_PORT:-8003}"'
-    },
-    "Logging":{
-      "output_directory":"'"${VELOX_LOG_DIR:-./logs}"'",
-      "separate_logs_per_component":true,
-      "debug":{"disabled":'"${VELOX_DEBUG_DISABLED:-true}"'}
-    },
-    "Client":{
-      "server_urls":["'"$VELOX_FRONTEND_SERVER_URL"'"],
-      "use_self_signed_ssl":true
-    },
-    "Datastore":{
-      "location":"'"$DATASTORE_LOCATION"'",
-      "filestore_directory":"'"$FILESTORE_DIRECTORY"'"
-    }
-  }' > "$CONFIG_FILE"
+  # Build the merge document with jq so values containing quotes,
+  # backslashes, or other JSON metacharacters are encoded safely.
+  merge_json="$(jq -n \
+    --arg public_path "$PUBLIC_PATH" \
+    --arg frontend_hostname "${VELOX_FRONTEND_HOSTNAME:-localhost}" \
+    --arg bind_address "$BIND_ADDRESS" \
+    --argjson frontend_port "${VELOX_FRONTEND_PORT:-8000}" \
+    --argjson api_port "${VELOX_API_PORT:-8001}" \
+    --argjson gui_port "${VELOX_GUI_PORT:-8889}" \
+    --arg gui_url "$VELOX_GUI_URL" \
+    --argjson monitoring_port "${VELOX_MONITORING_PORT:-8003}" \
+    --arg log_dir "${VELOX_LOG_DIR:-./logs}" \
+    --argjson debug_disabled "${VELOX_DEBUG_DISABLED:-true}" \
+    --arg server_url "$VELOX_FRONTEND_SERVER_URL" \
+    --arg datastore "$DATASTORE_LOCATION" \
+    --arg filestore "$FILESTORE_DIRECTORY" \
+    '{
+      Frontend: {
+        public_path: $public_path,
+        hostname: $frontend_hostname,
+        bind_address: $bind_address,
+        bind_port: $frontend_port
+      },
+      API: {bind_address: $bind_address, bind_port: $api_port},
+      GUI: {bind_address: $bind_address, bind_port: $gui_port, public_url: $gui_url},
+      Monitoring: {bind_address: $bind_address, bind_port: $monitoring_port},
+      Logging: {
+        output_directory: $log_dir,
+        separate_logs_per_component: true,
+        debug: {disabled: $debug_disabled}
+      },
+      Client: {server_urls: [$server_url], use_self_signed_ssl: true},
+      Datastore: {location: $datastore, filestore_directory: $filestore}
+    }')"
+
+  ./velociraptor config generate --merge "$merge_json" > "$CONFIG_FILE"
 
   # Fix temp path references
   sed -i 's#/tmp/velociraptor#.#g' "$CONFIG_FILE"
@@ -322,10 +349,13 @@ if [ "$VELOX_CONFIG_MODE" = "reconcile" ]; then
     # Compare and update if different
     if [ "$current_value" != "$new_value" ]; then
       echo "  - Updating '$key_path': '$current_value' -> '$new_value'"
+      # Pass the value as a typed jq argument rather than splicing it into
+      # the filter, so quotes or jq syntax in a value cannot alter the edit.
+      # Non-string values were validated as port numbers/booleans above.
       if [ "$is_string" = "true" ]; then
-        yq -i -y "$key_path = \"$new_value\"" "$CONFIG_FILE"
+        yq -i -y --arg v "$new_value" "$key_path = \$v" "$CONFIG_FILE"
       else
-        yq -i -y "$key_path = $new_value" "$CONFIG_FILE"
+        yq -i -y --argjson v "$new_value" "$key_path = \$v" "$CONFIG_FILE"
       fi
       CONFIG_UPDATED=true
     fi
@@ -475,8 +505,8 @@ check_bin() {
   fi
 }
 
-# Linux (amd64/arm64)
-for arch in amd64 arm64; do
+# Linux (amd64/arm64 glibc builds + amd64 static musl build)
+for arch in amd64 arm64 amd64_musl; do
   check_bin "linux_${arch}_bin" "/opt/velociraptor/linux/velociraptor_client_${arch}"
 done
 # macOS (amd64/arm64)
@@ -499,8 +529,9 @@ fi
 if [ "$NEED_REPACK" = true ]; then
   echo "Generating client config and repacking clients..."
 
-  # Linux clients (amd64 + arm64)
-  for arch in amd64 arm64; do
+  # Linux clients (amd64 + arm64, plus the static amd64 musl build for
+  # older-glibc, Alpine, and minimal/embedded hosts)
+  for arch in amd64 arm64 amd64_musl; do
     BIN="/opt/velociraptor/linux/velociraptor_client_${arch}"
     OUT_BASE="$CLIENT_DIR/linux/velociraptor_client_${arch}_repacked"
     if [ -s "$BIN" ]; then
@@ -569,13 +600,13 @@ if [ "$NEED_REPACK" = true ]; then
   # Persist config hash
   write_state_sha client.config "$NEW_CFG_SHA"
   # Persist binary hashes
-  for arch in amd64 arm64; do
-    for os in linux mac; do
-      HASH_FILE="/opt/velociraptor/${os}/velociraptor_client_${arch}.sha256"
-      if [ -s "$HASH_FILE" ]; then
-        write_state_sha "${os}_${arch}_bin" "$(read_sha "$HASH_FILE")"
-      fi
-    done
+  for key in linux_amd64 linux_arm64 linux_amd64_musl mac_amd64 mac_arm64; do
+    os="${key%%_*}"
+    arch="${key#*_}"
+    HASH_FILE="/opt/velociraptor/${os}/velociraptor_client_${arch}.sha256"
+    if [ -s "$HASH_FILE" ]; then
+      write_state_sha "${key}_bin" "$(read_sha "$HASH_FILE")"
+    fi
   done
   for kind in exe msi; do
     HASH_FILE="/opt/velociraptor/windows/velociraptor_client.${kind}.sha256"

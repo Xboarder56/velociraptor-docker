@@ -19,7 +19,7 @@ On start, the container prints a small build banner (version, arch, base image, 
 
 ```bash
 docker run -it --rm \
-  -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
+  -p 8000:8000 -p 8889:8889 -p 127.0.0.1:8001:8001 -p 127.0.0.1:8003:8003 \
   -v $PWD/velodata:/velociraptor \
   docker.io/xboarder56/velociraptor:latest
 ```
@@ -88,7 +88,7 @@ docker run -it --rm \
   -e VELOX_CONFIG_FILE=/config/server.config.yaml \
   -v "$PWD/server.config.yaml:/config/server.config.yaml:ro" \
   -v "$PWD/velodata:/velociraptor" \
-  -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
+  -p 8000:8000 -p 8889:8889 -p 127.0.0.1:8001:8001 -p 127.0.0.1:8003:8003 \
   docker.io/xboarder56/velociraptor:latest
 ```
 
@@ -126,7 +126,7 @@ This overrides the default, which is to run with verbose (DEBUG) logs.
 
 ```bash
 docker run -it --rm \
-  -p 8000:8000 -p 8889:8889 -p 8001:8001 -p 8003:8003 \
+  -p 8000:8000 -p 8889:8889 -p 127.0.0.1:8001:8001 -p 127.0.0.1:8003:8003 \
   -v $PWD/velodata:/velociraptor \
   -e VELOX_DEFAULT_USER=admin -e VELOX_DEFAULT_PASSWORD='S3cure!' \
   -e VELOX_START_SERVER_VERBOSE=false \
@@ -174,8 +174,8 @@ services:
     ports:
       - "8000:8000"   # client/ingest
       - "8889:8889"   # GUI
-      - "8001:8001"   # gRPC API
-      - "8003:8003"   # Metrics
+      - "127.0.0.1:8001:8001"   # gRPC API (loopback only)
+      - "127.0.0.1:8003:8003"   # Metrics (unauthenticated; loopback only)
     volumes:
       - ./velodata:/velociraptor
 ```
@@ -185,7 +185,7 @@ services:
 ## What to Expect on First Run
 
 - The entrypoint generates a secure **server.config.yaml** and a **client.config.yaml**.
-- Clients for Linux (amd64 + arm64), macOS (amd64 + arm64), and Windows (exe + msi) are **repacked** into `/velociraptor/client_bundles/` with your server URL.
+- Clients for Linux (amd64 + arm64, plus a static amd64 musl build), macOS (amd64 + arm64), and Windows (exe + msi) are **repacked** into `/velociraptor/client_bundles/` with your server URL.
 - You’ll see logs like:
   - `GUI is ready to handle TLS requests on https://localhost:8889/`
   - `Frontend is ready to handle client TLS requests at https://localhost:8000/`
@@ -196,7 +196,7 @@ services:
 
 After startup, check `./velodata/client_bundles/` for repacked binaries:
 
-- **Linux:** repacked executables for amd64 and arm64; `.deb` and `.rpm` packages for the image's native architecture
+- **Linux:** repacked executables for amd64 and arm64 (`velociraptor_client_<arch>_repacked`), a statically linked amd64 musl build (`velociraptor_client_amd64_musl_repacked`) for hosts with an old or missing glibc (Alpine, older RHEL/CentOS, appliances, minimal containers), and `.deb`/`.rpm` packages for the image's native architecture
 - **macOS:** repacked executables for amd64 and arm64
 - **Windows:** `.exe` and `.msi`
 
@@ -208,8 +208,8 @@ If a specific upstream client binary isn’t available, the repack step is skipp
 
 Every image includes these official [Velocidex Triage Artifacts](https://triage.velocidex.com/docs/triage_artifacts/):
 
-- `Linux.Triage.UAC`
-- `Windows.Triage.Targets`
+- `Linux.Triage.UAC` — Linux triage driven by the [UAC (Unix-like Artifacts Collector)](https://github.com/tclahr/uac) artifact definitions
+- `Windows.Triage.Targets` — Windows triage driven by the [KapeFiles](https://github.com/EricZimmerman/KapeFiles) target definitions
 
 The generated definitions are pinned to an immutable upstream commit, verified by SHA-256 during the image build, validated against the bundled Velociraptor binary, and loaded on every server start. The daily upstream workflow tracks both definitions and opens a revision PR when they change.
 
@@ -220,6 +220,7 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 - **Change the default credentials** on first run; prefer `VELOX_DEFAULT_PASSWORD_FILE` so the password is not stored in container metadata.
 - TLS is **self-signed** by default; rotate keys/certificates as needed from the server.
 - Expose GUI/API only where appropriate; consider a reverse proxy or firewall rules.
+- The examples publish the gRPC API (`8001`) and Prometheus metrics (`8003`) on `127.0.0.1` only. The metrics endpoint has no authentication; publish it more widely only behind a firewall or to a trusted scrape network.
 
 ---
 
@@ -234,8 +235,8 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 ## Tags
 
 - `:latest` — most recent successful build
-- `:<velociraptor-version>` — e.g. `:0.76.5`. Floats to the latest re-release for that upstream patch.
-- `:<minor>` — e.g. `:0.76`. Floats across patch releases within that minor.
+- `:<velociraptor-version>` — e.g. `:0.77.3`. Floats to the latest re-release for that upstream patch.
+- `:<minor>` — e.g. `:0.77`. Floats across patch releases within that minor.
 - `:sha-<short>` — e.g. `:sha-abc1234`. Commit-pinned reproducible reference.
 - Multi-arch manifests are published for **amd64** and **arm64**
 
@@ -245,10 +246,10 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 
 This repo uses two GitHub Actions workflows:
 
-- **`upstream-check.yml`** runs daily. It polls the Velocidex release feed and the official Triage artifact project. If it sees a newer release, re-published binaries, or updated Triage definitions, it opens a PR bumping the corresponding lockfiles. For platforms upstream hasn't published yet for the latest release, the workflow walks back through prior releases and pins those assets to the most recent release that does include them.
-- **`build-publish.yml`** runs on tag pushes matching `v*` and on manual dispatch. It:
-  1. Builds an amd64 image and runs `scripts/ci-image-validation.sh` against it (server starts, GUI responds, a repacked Linux client makes contact).
-  2. Only if validation passes, does a multi-arch (`linux/amd64`, `linux/arm64`) buildx build and pushes to Docker Hub with provenance + SBOM attestations.
+- **`upstream-check.yml`** runs daily. It polls the Velocidex release feed and the official Triage artifact project. If it sees a newer release, re-published binaries, or updated Triage definitions, it opens a PR bumping the corresponding lockfiles. Both raw and gzipped (`.gz`, used since v0.77.3) upstream assets are supported; downloads are checked against GitHub's published asset digests. For platforms upstream hasn't published yet for the latest release, the workflow walks back through prior releases and pins those assets to the most recent release that does include them, and lists any such lagging assets in the PR body.
+- **`build-publish.yml`** runs on pull requests to `master`, tag pushes matching `v*`, and manual dispatch. It:
+  1. Builds an amd64 image and runs `scripts/ci-image-validation.sh` (server starts, GUI responds, a repacked Linux client makes contact, the musl client runs on Alpine) and `scripts/ci-config-modes-validation.sh` (config modes, secrets, input handling, and a real upgrade from the published `:latest` image).
+  2. For tag pushes and non-dry-run manual dispatches only (never pull requests), and only if validation passes, does a multi-arch (`linux/amd64`, `linux/arm64`) buildx build and pushes to Docker Hub with provenance + SBOM attestations.
 
 To cut a release:
 
@@ -256,9 +257,9 @@ To cut a release:
 2. Tag the merge commit with the value of `VELOX_VERSION` from `versions.env` (optionally suffixed with `-<IMAGE_REVISION>` when `IMAGE_REVISION > 1`):
 
    ```bash
-   git tag v0.76.8        # first revision
+   git tag v0.77.3        # first revision
    # or
-   git tag v0.76.8-2      # subsequent re-release of the same upstream version
+   git tag v0.77.3-2      # subsequent re-release of the same upstream version
    git push --tags
    ```
 

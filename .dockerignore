@@ -1,0 +1,4 @@
+# Only ./entrypoint is copied into the image; keep the build context small
+# and keep local data/secrets out of it.
+*
+!entrypoint
