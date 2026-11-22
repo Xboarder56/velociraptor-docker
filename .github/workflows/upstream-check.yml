@@ -349,15 +349,23 @@ jobs:
             cat config-drift.md
             echo "DRIFT_EOF"
           } >> "$GITHUB_OUTPUT"
-          rm -f config-drift.md
+          # Committed with the bump (docs/config-drift/<version>.md) so the
+          # report is reviewed in the PR diff and kept in the history.
+          mv config-drift.md .upstream-check/config-drift.md
 
       - name: Apply changes to repo
         if: steps.decide.outputs.changed == 'true'
+        env:
+          NEW_VELOX_VERSION: ${{ steps.decide.outputs.new_velox_version }}
         run: |
           set -euo pipefail
           mv .upstream-check/versions.env.new versions.env
           mv .upstream-check/binaries.lock.new binaries.lock
           mv .upstream-check/artifacts.lock.new artifacts.lock
+          if [ -s .upstream-check/config-drift.md ]; then
+            mkdir -p docs/config-drift
+            mv .upstream-check/config-drift.md "docs/config-drift/${NEW_VELOX_VERSION}.md"
+          fi
           rm -rf .upstream-check releases.json all-assets.tsv
 
       - name: Open or update the bump PR
@@ -386,6 +394,8 @@ jobs:
             Merging publishes automatically: `release-tag.yml` tags the merge commit and runs the release build.
 
             ${{ steps.drift.outputs.report }}
+
+            (Also committed as `docs/config-drift/${{ steps.decide.outputs.new_velox_version }}.md`.)
           labels: ${{ steps.drift.outputs.labels }}
           delete-branch: true
 
