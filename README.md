@@ -9,7 +9,9 @@ Run the [Velocidex Velociraptor](https://github.com/Velocidex/velociraptor) serv
 - **Architectures:** `linux/amd64`, `linux/arm64`
 - **Ports:** `8000` (client/ingest), `8889` (GUI), `8001` (gRPC API), `8003` (Prometheus)
 - **Data dir:** mount `/velociraptor` to persist config, keys, artifacts, and repacked clients
-- **TLS:** self-signed cert generated on first run (you can rotate later)
+- **TLS:** self-signed cert generated on first run, rotated automatically 30 days before it expires
+- **Non-root:** the entrypoint prepares the volume, then runs the server as uid/gid `10001`
+- **Verified inputs:** every Velociraptor binary is checked against its pinned SHA-256 and its Velocidex release signature at build time
 
 On start, the container prints a small build banner (version, arch, base image, git commit, build date) so you can confirm what you pulled.
 
@@ -34,41 +36,52 @@ The same command works with Podman by replacing `docker` with `podman`. The full
 
 These **variables are read at container start**—no image rebuilds needed.
 
-| Variable                          | Purpose                                                                              | Default                         |
-| --------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------- |
-| `VELOX_CONFIG_MODE`               | Config ownership: `reconcile`, `generated`, or `external`                            | `reconcile`                     |
-| `VELOX_CONFIG_FILE`               | Server config path; required in `external` mode                                      | `server.config.yaml`            |
-| `VELOX_DEFAULT_USER`              | Initial GUI admin username                                                           | `admin`                         |
-| `VELOX_DEFAULT_PASSWORD`          | Initial GUI admin password                                                           | `changeme`                      |
-| `VELOX_DEFAULT_PASSWORD_FILE`     | Read the initial admin password from a mounted secret file                           | unset                           |
-| `VELOX_DEFAULT_USER_ROLE`         | Role for the bootstrap user                                                          | `administrator`                 |
-| **File System**                   |                                                                                      |                                 |
-| `VELOX_FILESTORE_DIRECTORY`       | Root of Velociraptor filestore (collections, uploads)                                | `/velociraptor/filestore`       |
-| `VELOX_CLIENT_DIR`                | Directory where repacked clients are stored                                          | `/velociraptor/client_bundles`  |
-| **Client/Frontend Configuration** |                                                                                      |                                 |
-| `VELOX_FRONTEND_HOSTNAME`         | Public hostname for clients (builds client URL)                                      | `localhost`                     |
-| `VELOX_FRONTEND_PORT`             | Public-facing port for clients (builds client URL)                                   | `8000`                          |
-| `VELOX_FRONTEND_SERVER_SCHEME`    | Public scheme (`https`/`http`) for client URLs                                       | `https`                         |
-| `VELOX_FRONTEND_SERVER_URL`       | Full override for the client URL (e.g., `https://ingest.example.com/`)               | derived from components         |
-| `VELOX_SERVER_URL` (legacy)       | Alias for `VELOX_FRONTEND_SERVER_URL`. Use new variable.                             | `n/a`                           |
-| **GUI/Admin Configuration**       |                                                                                      |                                 |
-| `VELOX_GUI_HOSTNAME`              | Public hostname for the admin GUI (builds GUI URL)                                   | `localhost` (or client host)    |
-| `VELOX_GUI_PORT`                  | Public-facing port for the admin GUI (builds GUI URL)                                | `8889`                          |
-| `VELOX_GUI_SCHEME`                | Public scheme (`http` or `https` for GUI URL                                         | `https`                         |
-| `VELOX_GUI_URL`                   | Full override for the GUI URL (e.g., `https://admin.example.com/app/index.html`)     | derived from components         |
-| **Internal Ports**                |                                                                                      |                                 |
-| `VELOX_API_PORT`                  | gRPC API port                                                                        | `8001`                          |
-| `VELOX_MONITORING_PORT`           | Metrics port                                                                         | `8003`                          |
-| **Logging**                       |                                                                                      |                                 |
-| `VELOX_START_SERVER_VERBOSE`      | `true` to enable verbose (`-v`) server logs                                          | `true`                          |
-| `VELOX_LOG_DIR`                   | Where component logs write inside container                                          | `.`                             |
-| `VELOX_DEBUG_DISABLED`            | Disable DEBUG in component logs                                                      | `true`                          |
+| Variable | Purpose | Default |
+| -------- | ------- | ------- |
+| `VELOX_CONFIG_MODE` | Config ownership: `reconcile`, `generated`, or `external` | `reconcile` |
+| `VELOX_CONFIG_FILE` | Server config path; required in `external` mode | `server.config.yaml` |
+| **Bootstrap user** | | |
+| `VELOX_DEFAULT_USER` | Initial GUI admin username | `admin` |
+| `VELOX_DEFAULT_PASSWORD` | Initial GUI admin password | `changeme` |
+| `VELOX_DEFAULT_PASSWORD_FILE` | Read the initial admin password from a mounted secret file | unset |
+| `VELOX_DEFAULT_USER_ROLE` | Role for the bootstrap user (`administrator`, `org_admin`, `reader`, `analyst`, `investigator`, `artifact_writer`, `api`) | `administrator` |
+| **File system** | | |
+| `VELOX_FILESTORE_DIRECTORY` | Root of the filestore (collections, uploads); first run only | `./filestore` (`/velociraptor/filestore`) |
+| `VELOX_CLIENT_DIR` | Where repacked clients are written | `/velociraptor/client_bundles` |
+| `VELOX_EXTRA_ARTIFACTS_DIR` | Extra artifact definitions (`*.yaml`/`*.yml`) loaded with the bundled ones | `/velociraptor/artifacts` |
+| **Client / frontend (public side)** | | |
+| `VELOX_FRONTEND_HOSTNAME` | Public hostname or IP clients connect to. Optional; without it clients use `localhost` and the log warns | `localhost` |
+| `VELOX_FRONTEND_PORT` | Public port in the client URL (e.g. `443` behind a proxy or with `-p 443:8000`) | the listen port |
+| `VELOX_FRONTEND_SERVER_SCHEME` | Scheme in the client URL | `https` |
+| `VELOX_FRONTEND_SERVER_URL` | Full client URL override (e.g. `https://ingest.example.com/`); a missing trailing `/` is added | derived |
+| `VELOX_SERVER_URL` (legacy) | Alias for `VELOX_FRONTEND_SERVER_URL` | unset |
+| **GUI (public side)** | | |
+| `VELOX_GUI_HOSTNAME` | Public hostname for the GUI URL | `localhost` (reconcile: current, or the client host) |
+| `VELOX_GUI_PORT` | Public port in the GUI URL | the listen port |
+| `VELOX_GUI_SCHEME` | Scheme in the GUI URL | `https` |
+| `VELOX_GUI_URL` | Full GUI URL override; `/app/index.html` is appended if missing | derived |
+| **Listening ports (inside the container)** | | |
+| `VELOX_FRONTEND_BIND_PORT` | Port the client frontend listens on | `8000` |
+| `VELOX_GUI_BIND_PORT` | Port the GUI listens on | `8889` |
+| `VELOX_API_PORT` | gRPC API port | `8001` |
+| `VELOX_MONITORING_PORT` | Prometheus metrics port | `8003` |
+| **Process** | | |
+| `VELOX_UID` / `VELOX_GID` | Account the server runs as (e.g. your host user's ids for bind mounts) | `10001` / `10001` |
+| `VELOX_RUN_AS_ROOT` | `true` keeps the server running as root (previous behavior) | `false` |
+| `VELOX_CERT_RENEW_DAYS` | Rotate the frontend certificate when it expires within this many days | `30` |
+| **Logging** | | |
+| `VELOX_START_SERVER_VERBOSE` | `true` runs the server with `-v` (DEBUG logs); `false` for INFO | `true` |
+| `VELOX_LOG_DIR` | Component log directory | `./logs` (`/velociraptor/logs`) |
+| `VELOX_DEBUG_DISABLED` | Disable DEBUG in component logs | `true` |
+
+Public settings only change the URLs written into client configs and the GUI link. The server keeps listening on the `*_BIND_PORT` values, so a reverse proxy URL such as `https://ingest.example.com/` never moves the listener away from the port you published. In `reconcile` mode, existing listen ports change only when a `*_BIND_PORT` variable is set.
 
 **Persistent paths (mount a volume):**
 
-- `/velociraptor/server.config.yaml` — server config (auto-generated)
+- `/velociraptor/server.config.yaml` — server config (auto-generated, mode `0600`: it holds the CA and server private keys)
 - `/velociraptor/client.config.yaml` — client config
-- `/velociraptor/client_bundles/` — repacked client binaries (.deb/.rpm/.exe/.msi)
+- `/velociraptor/client_bundles/` — repacked client binaries (.deb/.rpm/.exe/.msi), world-readable for easy copying
+- `/velociraptor/artifacts/` — optional: your own artifact definitions
 
 ### Configuration ownership modes
 
@@ -92,11 +105,13 @@ docker run -it --rm \
   docker.io/xboarder56/velociraptor:latest
 ```
 
+If the server account cannot read the external file (for example a root-owned `0600` file), the entrypoint gives the server a private copy at start; the original is never modified.
+
 Because `external` mode cannot replace its configuration, certificate/key rotation must be handled by the external config owner. Generated client configuration and client bundles are still written beneath `/velociraptor`.
 
 ### Bootstrap password secrets
 
-`VELOX_DEFAULT_PASSWORD_FILE` follows the Docker/Podman `_FILE` convention. It is read only while creating a new server config and bootstrap user. The file must be readable and non-empty, and setting both password variables during initialization is an error.
+`VELOX_DEFAULT_PASSWORD_FILE` follows the Docker/Podman `_FILE` convention. It is read only when the bootstrap user is created: on first start, or when an existing datastore has no users at all (for example after an interrupted first start with an older image). The file must be readable and non-empty, and setting both password variables during initialization is an error.
 
 ```yaml
 secrets:
@@ -135,6 +150,8 @@ docker run -it --rm \
 
 ### 2) Set the public URL clients should use
 
+Here clients reach the host on port 443, which is mapped to the frontend's default listen port 8000:
+
 ```bash
 docker run -it --rm \
   -e VELOX_FRONTEND_HOSTNAME=velociraptor.example.com \
@@ -145,20 +162,26 @@ docker run -it --rm \
   docker.io/xboarder56/velociraptor:latest
 ```
 
-### 3) Use different public URLs for Client and GUI
+### 3) Use different public URLs for Client and GUI (reverse proxy)
 
 ```bash
 docker run -it --rm \
-  -e VELOX_FRONTEND_SERVER_URL=https://ingest.example.com:8000/ \
-  -e VELOX_GUI_URL=https://admin.example.com:8889/ \
+  -e VELOX_FRONTEND_SERVER_URL=https://ingest.example.com/ \
+  -e VELOX_GUI_URL=https://admin.example.com/ \
   -p 8000:8000 -p 8889:8889 \
   -v $PWD/velodata:/velociraptor \
   docker.io/xboarder56/velociraptor:latest
 ```
 
+### 4) Load your own artifacts
+
+Put `*.yaml` artifact definitions in `./velodata/artifacts/` (or mount a directory and set `VELOX_EXTRA_ARTIFACTS_DIR`). They are loaded together with the bundled Triage artifacts on every start; the banner shows how many were found.
+
 ---
 
 ## Docker Compose
+
+The repository's [`docker-compose.yaml`](docker-compose.yaml) is the recommended starting point. It adds `init: true`, `no-new-privileges`, a minimal capability set, a pids limit, a memory limit (`VELOX_MEM_LIMIT`, default `4g`), and a commented Docker secrets example. A minimal version:
 
 ```yaml
 services:
@@ -184,9 +207,10 @@ services:
 
 ## What to Expect on First Run
 
-- The entrypoint generates a secure **server.config.yaml** and a **client.config.yaml**.
+- The entrypoint generates a secure **server.config.yaml** (moved into place only after the admin user exists, so an interrupted first start leaves nothing half-done) and a **client.config.yaml**.
 - Clients for Linux (amd64 + arm64, plus a static amd64 musl build), macOS (amd64 + arm64), and Windows (exe + msi) are **repacked** into `/velociraptor/client_bundles/` with your server URL.
-- You’ll see logs like:
+- The data volume is handed to the server account (uid `10001`), then the server starts without root.
+- With verbose logs (the default) you’ll see lines like:
   - `GUI is ready to handle TLS requests on https://localhost:8889/`
   - `Frontend is ready to handle client TLS requests at https://localhost:8000/`
 
@@ -196,7 +220,7 @@ services:
 
 After startup, check `./velodata/client_bundles/` for repacked binaries:
 
-- **Linux:** repacked executables for amd64 and arm64 (`velociraptor_client_<arch>_repacked`), a statically linked amd64 musl build (`velociraptor_client_amd64_musl_repacked`) for hosts with an old or missing glibc (Alpine, older RHEL/CentOS, appliances, minimal containers), and `.deb`/`.rpm` packages for the image's native architecture
+- **Linux:** repacked executables for amd64 and arm64 (`velociraptor_client_<arch>_repacked`), a statically linked amd64 musl build (`velociraptor_client_amd64_musl_repacked`) for hosts with an old or missing glibc (Alpine, older RHEL/CentOS, appliances, minimal containers), and `.deb`/`.rpm` packages for both amd64 and arm64
 - **macOS:** repacked executables for amd64 and arm64
 - **Windows:** `.exe` and `.msi`
 
@@ -217,7 +241,9 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 
 ## Security Notes
 
-- **Change the default credentials** on first run; prefer `VELOX_DEFAULT_PASSWORD_FILE` so the password is not stored in container metadata.
+- **Change the default credentials** on first run; prefer `VELOX_DEFAULT_PASSWORD_FILE` so the password is not stored in container metadata. (While the bootstrap user is created, the password is briefly on the `velociraptor user add` command line: Velociraptor cannot read it from stdin.)
+- The server runs as an unprivileged user; `server.config.yaml` and its backups are `0600`.
+- Release binaries are verified against pinned SHA-256 values and the Velocidex release signing key (`0572 F28B 4EF1 9A04 3F4C BBE0 B22A 7FB1 9CB6 CFA1`, `keys/velocidex-release.asc`).
 - TLS is **self-signed** by default; rotate keys/certificates as needed from the server.
 - Expose GUI/API only where appropriate; consider a reverse proxy or firewall rules.
 - The examples publish the gRPC API (`8001`) and Prometheus metrics (`8003`) on `127.0.0.1` only. The metrics endpoint has no authentication; publish it more widely only behind a firewall or to a trusted scrape network.
@@ -226,44 +252,51 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 
 ## Troubleshooting
 
-- Seeing `[DEBUG] FlowStorageManager housekeeping run`?\
-  You likely set `VELOX_START_SERVER_VERBOSE=true` (adds `-v`). Remove it to suppress DEBUG.
-- Ports already in use? Map them as needed: `-p 443:8000` and set `VELOX_FRONTEND_PORT=443`.
+- Too many `[DEBUG]` lines? Verbose logging is the default; set `VELOX_START_SERVER_VERBOSE=false`.
+- Ports already in use? Map them as needed, e.g. `-p 443:8000`, and set `VELOX_FRONTEND_PORT=443` so clients use the public port.
+- `Permission denied` on a bind mount after upgrading? The volume now belongs to uid `10001`. Set `VELOX_UID`/`VELOX_GID` to your host user's ids, or `VELOX_RUN_AS_ROOT=true` for the old behavior.
+- GUI pages load but every action fails with HTTP 503 (older images, configs created before this fix)? The GUI calls its own API through `API.hostname`, which defaulted to the public hostname. New configs, and `reconcile`-mode configs on start, set it to `127.0.0.1`; for `generated`/`external` configs set `API.hostname: 127.0.0.1` yourself.
+
+## Upgrading from earlier images
+
+- Existing volumes keep working: on first start the entrypoint changes ownership of the data directory to the server account and tightens `server.config.yaml` to `0600`. Large datastores take a moment the first time; later starts only touch files with the wrong owner.
+- `VELOX_FRONTEND_PORT` and `VELOX_GUI_PORT` now only set the public ports in URLs (as documented). If you used them to change the port the server *listens* on, set `VELOX_FRONTEND_BIND_PORT`/`VELOX_GUI_BIND_PORT` instead. Existing listen ports in a persisted config are left as they are.
+- `./velociraptor` in the volume is now a link to the image's binary.
 
 ---
 
 ## Tags
 
-- `:latest` — most recent successful build
-- `:<velociraptor-version>` — e.g. `:0.77.3`. Floats to the latest re-release for that upstream patch.
-- `:<minor>` — e.g. `:0.77`. Floats across patch releases within that minor.
-- `:sha-<short>` — e.g. `:sha-abc1234`. Commit-pinned reproducible reference.
+- `:latest` — the newest Velociraptor version released here (never moves back to an older version)
+- `:<velociraptor-version>` — e.g. `:0.77.3`. Follows image revisions of that upstream release.
+- `:<velociraptor-version>-<revision>` — e.g. `:0.77.3-2`. Never changes once published.
+- `:<minor>` — e.g. `:0.77`. The newest patch of that minor line.
+- `:sha-<short>` — the commit the image was built from.
 - Multi-arch manifests are published for **amd64** and **arm64**
 
 ---
 
 ## Build & Release Flow
 
-This repo uses two GitHub Actions workflows:
+- **`upstream-check.yml`** (daily) polls the Velocidex releases and the official Triage artifact project:
+  - The image version is the version of the two Linux server binaries. If they differ, or a new release is under 48 hours old and still missing assets, it waits.
+  - It refuses to "bump" to an older version, ignores Triage rebuilds that only change the embedded commit line, and keeps a single bump PR (`upstream-check/bump`) up to date.
+  - Each bump is validated by a `build-publish` dry run on that branch (PRs opened with `GITHUB_TOKEN` get no PR checks). Failures open an issue, and the workflow keeps its own schedule from being disabled.
+- **`build-publish.yml`** builds natively on amd64 and arm64 runners and runs the full validation on both:
+  - `scripts/ci-image-validation.sh`: unprivileged server, private config, healthcheck, GUI and GUI API login, bundled and extra artifacts loaded, all 11 client bundles, `.deb`/`.rpm` installs, a repacked client enrolling and completing a collection, and the musl client on Alpine.
+  - `scripts/ci-config-modes-validation.sh`: config modes, secrets, invalid input, interrupted first start, reverse-proxy URLs, and real upgrades from published `0.76.5` and `0.77.2` images in which an enrolled client keeps its identity.
+  - Publishing (a `v*` tag, or a manual run with `dry_run` unchecked on `master` or a tag) pushes each architecture by digest, validates that pushed image, and only then creates the multi-arch tags.
+- **`release-tag.yml`** runs when `versions.env` changes on `master`: it tags the merge commit (`v<version>`, or `v<version>-<revision>` for revisions after the first) and starts the release build. Merging a bump PR, or a PR that raises `IMAGE_REVISION`, is all it takes to publish.
+- Dependabot keeps the SHA-pinned actions and the digest-pinned base image current.
 
-- **`upstream-check.yml`** runs daily. It polls the Velocidex release feed and the official Triage artifact project. If it sees a newer release, re-published binaries, or updated Triage definitions, it opens a PR bumping the corresponding lockfiles. Both raw and gzipped (`.gz`, used since v0.77.3) upstream assets are supported; downloads are checked against GitHub's published asset digests. For platforms upstream hasn't published yet for the latest release, the workflow walks back through prior releases and pins those assets to the most recent release that does include them, and lists any such lagging assets in the PR body.
-- **`build-publish.yml`** runs on pull requests to `master`, tag pushes matching `v*`, and manual dispatch. It:
-  1. Builds an amd64 image and runs `scripts/ci-image-validation.sh` (server starts, GUI responds, a repacked Linux client makes contact, the musl client runs on Alpine) and `scripts/ci-config-modes-validation.sh` (config modes, secrets, input handling, and a real upgrade from the published `:latest` image).
-  2. For tag pushes and non-dry-run manual dispatches only (never pull requests), and only if validation passes, does a multi-arch (`linux/amd64`, `linux/arm64`) buildx build and pushes to Docker Hub with provenance + SBOM attestations.
+Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 
-To cut a release:
+Build locally from the pinned lockfiles:
 
-1. Review and merge the PR from `upstream-check`.
-2. Tag the merge commit with the value of `VELOX_VERSION` from `versions.env` (optionally suffixed with `-<IMAGE_REVISION>` when `IMAGE_REVISION > 1`):
-
-   ```bash
-   git tag v0.77.3        # first revision
-   # or
-   git tag v0.77.3-2      # subsequent re-release of the same upstream version
-   git push --tags
-   ```
-
-3. Required Docker Hub secrets on the repo: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
+```bash
+scripts/build.sh velociraptor:local
+IMAGE=velociraptor:local scripts/ci-image-validation.sh
+```
 
 ---
 

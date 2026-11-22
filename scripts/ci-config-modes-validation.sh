@@ -2,10 +2,18 @@
 set -euo pipefail
 
 IMAGE="${IMAGE:-velociraptor:smoke}"
+# Space-separated list of previously published images to upgrade from.
+LEGACY_IMAGES="${LEGACY_IMAGES:-${LEGACY_IMAGE:-}}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-300}"
+case "$(uname -m)" in
+  x86_64|amd64) CLIENT_ARCH=amd64 ;;
+  *) CLIENT_ARCH=arm64 ;;
+esac
+UBUNTU_IMAGE="ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db"
 TEST_ROOT="$(mktemp -d)"
 SUFFIX="$$-${RANDOM}"
 ACTIVE_CONTAINERS=()
+ACTIVE_NETWORKS=()
 
 fail() {
   echo "FATAL: $*" >&2
@@ -25,6 +33,9 @@ cleanup() {
   fi
   for container in "${ACTIVE_CONTAINERS[@]}"; do
     docker rm -f "$container" >/dev/null 2>&1 || true
+  done
+  for network in ${ACTIVE_NETWORKS[@]+"${ACTIVE_NETWORKS[@]}"}; do
+    docker network rm "$network" >/dev/null 2>&1 || true
   done
   # Bind-mounted files may be root-owned on Linux CI runners. A cleanup failure
   # must not turn an otherwise successful validation into a false negative;
@@ -56,6 +67,31 @@ wait_ready() {
   done
 
   fail "$container did not become ready within ${READY_TIMEOUT_S}s"
+}
+
+# Files written by the container belong to its server user and are private
+# (the config is 0600), so read them through a throwaway container.
+host_read() {
+  docker run --rm --entrypoint cat -v "$(dirname "$1"):/d:ro" "$IMAGE" "/d/$(basename "$1")"
+}
+
+assert_private_config() {
+  local container="$1" mode uid
+  uid="$(docker exec "$container" awk '/^Uid:/ {print $2}' /proc/1/status)"
+  [ "$uid" = 10001 ] || fail "$container: server runs as uid $uid, expected 10001"
+  mode="$(docker exec "$container" stat -c '%a %u' /velociraptor/server.config.yaml)"
+  [ "$mode" = "600 10001" ] || fail "$container: server.config.yaml is '$mode', expected '600 10001'"
+}
+
+assert_gui_api() {
+  local container="$1" username="$2" password="$3" user_type
+  user_type="$(docker exec "$container" curl -ksS --max-time 10 -u "$username:$password" \
+    https://127.0.0.1:8889/api/v1/GetUserUITraits | jq -r '.user_type // empty')"
+  [ -n "$user_type" ] || fail "$container: the GUI API did not answer for $username"
+}
+
+client_ids() {
+  docker exec "$1" sh -c 'ls -1 /velociraptor/clients 2>/dev/null | grep "^C\." || true'
 }
 
 assert_log_contains() {
@@ -122,29 +158,72 @@ assert_auth() {
   fi
 }
 
-if [ -n "${LEGACY_IMAGE:-}" ]; then
-  echo "--- Real upgrade: pre-feature image to backward-compatible default ---"
-  UPGRADE_DATA="$TEST_ROOT/upgrade-data"
-  UPGRADE_OLD_CONTAINER="velo-config-upgrade-old-$SUFFIX"
-  UPGRADE_NEW_CONTAINER="velo-config-upgrade-new-$SUFFIX"
+for LEGACY in $LEGACY_IMAGES; do
+  echo "--- Real upgrade from $LEGACY (data, login and client identity survive) ---"
+  n="${#ACTIVE_CONTAINERS[@]}"
+  UPGRADE_DATA="$TEST_ROOT/upgrade-data-$n"
+  UPGRADE_NET="velo-upgrade-$SUFFIX-$n"
+  UPGRADE_OLD_CONTAINER="velo-config-upgrade-old-$SUFFIX-$n"
+  UPGRADE_NEW_CONTAINER="velo-config-upgrade-new-$SUFFIX-$n"
+  UPGRADE_CLIENT="velo-config-upgrade-client-$SUFFIX-$n"
   UPGRADE_PASSWORD="upgrade-password-5318"
-  start_server_with_image "$UPGRADE_OLD_CONTAINER" "$UPGRADE_DATA" "$LEGACY_IMAGE" \
+  docker network create "$UPGRADE_NET" >/dev/null
+  ACTIVE_NETWORKS+=("$UPGRADE_NET")
+  start_server_with_image "$UPGRADE_OLD_CONTAINER" "$UPGRADE_DATA" "$LEGACY" \
+    --network "$UPGRADE_NET" --network-alias velociraptor \
     -e VELOX_DEFAULT_USER=admin \
     -e VELOX_DEFAULT_PASSWORD="$UPGRADE_PASSWORD" \
-    -e VELOX_FRONTEND_HOSTNAME=pre-feature-install \
+    -e VELOX_FRONTEND_HOSTNAME=velociraptor \
     -e VELOX_START_SERVER_VERBOSE=false
   assert_auth "$UPGRADE_OLD_CONTAINER" admin "$UPGRADE_PASSWORD"
+
+  # Enroll a client against the old server and keep it running across the upgrade.
+  ACTIVE_CONTAINERS+=("$UPGRADE_CLIENT")
+  docker run -d --name "$UPGRADE_CLIENT" --network "$UPGRADE_NET" \
+    -v "$UPGRADE_DATA/client_bundles/linux:/client:ro" "$UBUNTU_IMAGE" \
+    "/client/velociraptor_client_${CLIENT_ARCH}_repacked" client >/dev/null
+  old_ids=""
+  for _ in $(seq 1 60); do
+    old_ids="$(client_ids "$UPGRADE_OLD_CONTAINER")"
+    [ -n "$old_ids" ] && break
+    sleep 3
+  done
+  [ -n "$old_ids" ] || fail "no client enrolled with $LEGACY"
   stop_server "$UPGRADE_OLD_CONTAINER"
+  upgraded_at_us="$(( $(date +%s) * 1000000 ))"
 
   start_server "$UPGRADE_NEW_CONTAINER" "$UPGRADE_DATA" \
+    --network "$UPGRADE_NET" --network-alias velociraptor \
     -e VELOX_FRONTEND_HOSTNAME=post-upgrade-reconciled \
     -e VELOX_START_SERVER_VERBOSE=false
   assert_log_contains "$UPGRADE_NEW_CONTAINER" 'Config Mode:      reconcile'
   assert_config_value "$UPGRADE_NEW_CONTAINER" /velociraptor/server.config.yaml \
     '.Frontend.hostname' post-upgrade-reconciled
+  assert_config_value "$UPGRADE_NEW_CONTAINER" /velociraptor/server.config.yaml \
+    '.API.hostname' 127.0.0.1
   assert_auth "$UPGRADE_NEW_CONTAINER" admin "$UPGRADE_PASSWORD"
+  assert_gui_api "$UPGRADE_NEW_CONTAINER" admin "$UPGRADE_PASSWORD"
+  assert_private_config "$UPGRADE_NEW_CONTAINER"
+
+  # The same client (same id, no re-enrollment) checks in with the new server.
+  # Clients back off while the server is down; allow a few minutes.
+  seen=false
+  for _ in $(seq 1 100); do
+    clients_json="$(docker exec "$UPGRADE_NEW_CONTAINER" curl -ksS --max-time 10 \
+      -u "admin:$UPGRADE_PASSWORD" 'https://127.0.0.1:8889/api/v1/SearchClients?query=all&limit=10' || true)"
+    ids="$(jq -r '[.items[]?.client_id] | sort | join(" ")' <<< "$clients_json" 2>/dev/null || true)"
+    last_seen="$(jq -r '[.items[]?.last_seen_at | tonumber] | max // 0' <<< "$clients_json" 2>/dev/null || echo 0)"
+    if [ "$ids" = "$(echo "$old_ids" | sort | xargs)" ] && [ "${last_seen:-0}" -gt "$upgraded_at_us" ]; then
+      seen=true
+      break
+    fi
+    sleep 3
+  done
+  $seen || fail "after upgrading from $LEGACY the client ($old_ids) did not check in (clients: ${ids:-none})"
+  echo "  client $old_ids kept its identity across the upgrade"
   stop_server "$UPGRADE_NEW_CONTAINER"
-fi
+  docker rm -f "$UPGRADE_CLIENT" >/dev/null
+done
 
 echo "--- Backward-compatible default: fresh reconcile install ---"
 LEGACY_DATA="$TEST_ROOT/legacy-data"
@@ -158,6 +237,8 @@ start_server "$LEGACY_CONTAINER" "$LEGACY_DATA" \
 assert_log_contains "$LEGACY_CONTAINER" 'Config Mode:      reconcile'
 assert_config_value "$LEGACY_CONTAINER" /velociraptor/server.config.yaml '.Frontend.hostname' legacy-initial
 assert_auth "$LEGACY_CONTAINER" admin "$LEGACY_PASSWORD"
+assert_gui_api "$LEGACY_CONTAINER" admin "$LEGACY_PASSWORD"
+assert_private_config "$LEGACY_CONTAINER"
 stop_server "$LEGACY_CONTAINER"
 
 echo "--- Backward-compatible default: persisted config is still reconciled ---"
@@ -171,7 +252,7 @@ assert_auth "$LEGACY_RESTART_CONTAINER" admin "$LEGACY_PASSWORD"
 stop_server "$LEGACY_RESTART_CONTAINER"
 
 echo "--- Generated mode: persisted config remains authoritative ---"
-cp "$LEGACY_DATA/server.config.yaml" "$TEST_ROOT/generated-config.before"
+host_read "$LEGACY_DATA/server.config.yaml" > "$TEST_ROOT/generated-config.before"
 GENERATED_CONTAINER="velo-config-generated-$SUFFIX"
 start_server "$GENERATED_CONTAINER" "$LEGACY_DATA" \
   -e VELOX_CONFIG_MODE=generated \
@@ -182,15 +263,18 @@ assert_config_value "$GENERATED_CONTAINER" /velociraptor/server.config.yaml '.Fr
 assert_log_contains "$GENERATED_CONTAINER" 'Generated config mode: existing configuration is authoritative'
 assert_auth "$GENERATED_CONTAINER" admin "$LEGACY_PASSWORD"
 stop_server "$GENERATED_CONTAINER"
-cmp -s "$TEST_ROOT/generated-config.before" "$LEGACY_DATA/server.config.yaml" || \
+host_read "$LEGACY_DATA/server.config.yaml" | cmp -s "$TEST_ROOT/generated-config.before" - || \
   fail 'generated mode unexpectedly changed the persisted server config'
 
 echo "--- External mode: read-only config is never modified ---"
 EXTERNAL_DIR="$TEST_ROOT/external"
 mkdir -p "$EXTERNAL_DIR"
-cp "$LEGACY_DATA/server.config.yaml" "$EXTERNAL_DIR/server.config.yaml"
+host_read "$LEGACY_DATA/server.config.yaml" > "$EXTERNAL_DIR/server.config.yaml"
 cp "$EXTERNAL_DIR/server.config.yaml" "$TEST_ROOT/external-config.before"
-chmod 0444 "$EXTERNAL_DIR/server.config.yaml"
+# Root-only, as operators typically keep it: the server user cannot read it
+# directly, so the entrypoint must hand it a private copy.
+docker run --rm --entrypoint sh -v "$EXTERNAL_DIR:/e" "$IMAGE" \
+  -c 'chown 0:0 /e/server.config.yaml && chmod 0400 /e/server.config.yaml'
 EXTERNAL_CONTAINER="velo-config-external-$SUFFIX"
 start_server "$EXTERNAL_CONTAINER" "$LEGACY_DATA" \
   -v "$EXTERNAL_DIR/server.config.yaml:/config/server.config.yaml:ro" \
@@ -201,11 +285,12 @@ start_server "$EXTERNAL_CONTAINER" "$LEGACY_DATA" \
 assert_config_value "$EXTERNAL_CONTAINER" /config/server.config.yaml '.Frontend.hostname' legacy-reconciled
 assert_log_contains "$EXTERNAL_CONTAINER" 'External config mode: configuration is read-only'
 assert_log_contains "$EXTERNAL_CONTAINER" 'External config mode: skipping automatic certificate rotation'
+assert_log_contains "$EXTERNAL_CONTAINER" 'Using a private copy of /config/server.config.yaml'
 assert_auth "$EXTERNAL_CONTAINER" admin "$LEGACY_PASSWORD"
 mount_rw="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/config/server.config.yaml"}}{{.RW}}{{end}}{{end}}' "$EXTERNAL_CONTAINER")"
 [ "$mount_rw" = "false" ] || fail 'external config mount was not read-only'
 stop_server "$EXTERNAL_CONTAINER"
-cmp -s "$TEST_ROOT/external-config.before" "$EXTERNAL_DIR/server.config.yaml" || \
+host_read "$EXTERNAL_DIR/server.config.yaml" | cmp -s "$TEST_ROOT/external-config.before" - || \
   fail 'external mode modified the read-only server config'
 
 echo "--- Secret file: bootstrap succeeds without exposing the value ---"
@@ -229,7 +314,8 @@ inspect_output="$(docker inspect "$SECRET_CONTAINER")"
 [[ "$inspect_output" != *"$SECRET_VALUE"* ]] || fail 'secret value appeared in docker inspect output'
 log_output="$(docker logs "$SECRET_CONTAINER" 2>&1)"
 [[ "$log_output" != *"$SECRET_VALUE"* ]] || fail 'secret value appeared in container logs'
-pid1_environment="$(docker exec "$SECRET_CONTAINER" sh -c "tr '\000' '\n' < /proc/1/environ")"
+# The server runs as uid 10001; read its environment as that user.
+pid1_environment="$(docker exec -u 10001:10001 "$SECRET_CONTAINER" sh -c "tr '\000' '\n' < /proc/1/environ")"
 [[ "$pid1_environment" != *"$SECRET_VALUE"* ]] || fail 'secret value remained in the server process environment'
 stop_server "$SECRET_CONTAINER"
 
@@ -335,5 +421,44 @@ if docker run --rm \
   fail 'entrypoint accepted a non-boolean VELOX_DEBUG_DISABLED'
 fi
 grep -q "VELOX_DEBUG_DISABLED must be 'true' or 'false'" "$TEST_ROOT/bad-bool.log"
+
+echo "--- Invalid bootstrap role fails before creating a config ---"
+BAD_ROLE_DATA="$TEST_ROOT/bad-role-data"
+mkdir -p "$BAD_ROLE_DATA"
+if docker run --rm -v "$BAD_ROLE_DATA:/velociraptor" \
+  -e VELOX_DEFAULT_USER_ROLE=admin "$IMAGE" >"$TEST_ROOT/bad-role.log" 2>&1; then
+  fail 'entrypoint accepted an invalid VELOX_DEFAULT_USER_ROLE'
+fi
+grep -q 'VELOX_DEFAULT_USER_ROLE must be one of' "$TEST_ROOT/bad-role.log"
+[ ! -e "$BAD_ROLE_DATA/server.config.yaml" ] || fail 'invalid role left a partial server config'
+
+echo "--- Locked-out install (config without users) gets its admin on start ---"
+LOCKED_DATA="$TEST_ROOT/locked-data"
+LOCKED_CONTAINER="velo-config-locked-$SUFFIX"
+mkdir -p "$LOCKED_DATA"
+docker run --rm --entrypoint sh -v "$LOCKED_DATA:/velociraptor" "$IMAGE" \
+  -c '/opt/velociraptor/linux/velociraptor config generate > /velociraptor/server.config.yaml'
+# A password that looks like a flag must still be accepted literally.
+start_server "$LOCKED_CONTAINER" "$LOCKED_DATA" \
+  -e VELOX_DEFAULT_PASSWORD='-n' \
+  -e VELOX_START_SERVER_VERBOSE=false
+assert_log_contains "$LOCKED_CONTAINER" "Creating default user 'admin'"
+assert_auth "$LOCKED_CONTAINER" admin '-n'
+stop_server "$LOCKED_CONTAINER"
+
+echo "--- A public URL behind a proxy does not move the listening ports ---"
+PROXY_DATA="$TEST_ROOT/proxy-data"
+PROXY_CONTAINER="velo-config-proxy-$SUFFIX"
+start_server "$PROXY_CONTAINER" "$PROXY_DATA" \
+  -e VELOX_DEFAULT_PASSWORD=proxy-password \
+  -e VELOX_FRONTEND_SERVER_URL=https://ingest.example.com \
+  -e VELOX_GUI_URL=https://admin.example.com/ \
+  -e VELOX_START_SERVER_VERBOSE=false
+assert_config_value "$PROXY_CONTAINER" /velociraptor/server.config.yaml '.Frontend.bind_port' 8000
+assert_config_value "$PROXY_CONTAINER" /velociraptor/server.config.yaml '.GUI.bind_port' 8889
+assert_config_value "$PROXY_CONTAINER" /velociraptor/server.config.yaml '.Client.server_urls[0]' https://ingest.example.com/
+assert_config_value "$PROXY_CONTAINER" /velociraptor/server.config.yaml '.GUI.public_url' https://admin.example.com/app/index.html
+assert_gui_api "$PROXY_CONTAINER" admin proxy-password
+stop_server "$PROXY_CONTAINER"
 
 echo "Config mode and secret-file validation: PASS"
