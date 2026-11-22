@@ -1,11 +1,9 @@
-ARG BASE_IMAGE=ubuntu:26.04
-FROM ${BASE_IMAGE}
+# Base image pinned by digest (Dependabot keeps it current). CI reads this
+# line to record the base image name and digest in the image labels.
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 ARG VELOX_VERSION
 ARG TARGETARCH
-ARG GIT_COMMIT
-ARG BUILD_DATE
-ARG BASE_IMAGE
 
 # Per-asset version overrides (default to VELOX_VERSION).
 # Set by the build workflow from binaries.lock when upstream has not
@@ -29,7 +27,9 @@ ARG VELOX_URL_DARWIN_ARM64=
 ARG VELOX_URL_WINDOWS_EXE=
 ARG VELOX_URL_WINDOWS_MSI=
 
-# Optional expected sha256 per asset. Empty = skip verification.
+# Optional expected sha256 per asset (of the downloaded file). CI always sets
+# these from binaries.lock. Independently of them, every binary must carry a
+# valid Velocidex release signature (see VELOX_VERIFY_SIGNATURES).
 ARG VELOX_SHA256_LINUX_AMD64=
 ARG VELOX_SHA256_LINUX_ARM64=
 ARG VELOX_SHA256_LINUX_AMD64_MUSL=
@@ -38,6 +38,11 @@ ARG VELOX_SHA256_DARWIN_ARM64=
 ARG VELOX_SHA256_WINDOWS_EXE=
 ARG VELOX_SHA256_WINDOWS_MSI=
 
+# Verify each downloaded binary against its upstream .sig with the pinned
+# Velocidex release key (keys/velocidex-release.gpg). Only disable this for
+# local experiments with unsigned builds.
+ARG VELOX_VERIFY_SIGNATURES=true
+
 # Official Velocidex Triage definitions, pinned by artifacts.lock.
 ARG TRIAGE_SOURCE_COMMIT=unknown
 ARG TRIAGE_LINUX_UAC_URL=
@@ -45,20 +50,21 @@ ARG TRIAGE_LINUX_UAC_SHA256=
 ARG TRIAGE_WINDOWS_TARGETS_URL=
 ARG TRIAGE_WINDOWS_TARGETS_SHA256=
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    VELOX_VERSION=${VELOX_VERSION} \
-    TARGETARCH=${TARGETARCH} \
-    GIT_COMMIT=${GIT_COMMIT:-unknown} \
-    BUILD_DATE=${BUILD_DATE:-unknown} \
-    BASE_IMAGE=${BASE_IMAGE} \
-    VELOX_TRIAGE_SOURCE_COMMIT=${TRIAGE_SOURCE_COMMIT}
+ENV DEBIAN_FRONTEND=noninteractive
 
-COPY ./entrypoint /entrypoint
-RUN chmod +x /entrypoint && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl gzip jq yq dpkg-dev rpm openssl && \
-    mkdir -p /opt/velociraptor/linux /opt/velociraptor/mac /opt/velociraptor/windows && \
-    rm -rf /var/lib/apt/lists/*
+# The server drops to this unprivileged account after the entrypoint has
+# prepared the data volume (override with VELOX_UID/VELOX_GID at runtime).
+# Package tooling is not needed: Velociraptor builds .deb/.rpm itself.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gzip jq yq openssl; \
+    rm -rf /var/lib/apt/lists/*; \
+    groupadd --system --gid 10001 velociraptor; \
+    useradd --system --uid 10001 --gid 10001 --home-dir /velociraptor \
+      --no-create-home --shell /usr/sbin/nologin velociraptor; \
+    mkdir -p /opt/velociraptor/linux /opt/velociraptor/mac /opt/velociraptor/windows
+
+COPY keys/velocidex-release.gpg /opt/velociraptor/keys/velocidex-release.gpg
 
 # Velocidex has used several release layouts:
 #   * v0.77.3+: full patch tag, binaries published gzipped (*.gz); MSI raw.
@@ -68,6 +74,8 @@ RUN chmod +x /entrypoint && \
 # builds, fetch_asset tries the current layouts and then the legacy layout.
 # The sha256 (when given) is of the downloaded file, i.e. the .gz for gzipped
 # assets, which matches the digest GitHub publishes for the release asset.
+# The upstream signature (<asset without .gz>.sig) covers the uncompressed
+# binary and is checked after decompression.
 # Server binary: must match the image's TARGETARCH and must succeed.
 # Client binaries (cross-arch + mac + windows): tolerant; missing assets
 # are skipped here and handled by the entrypoint repack logic.
@@ -102,6 +110,16 @@ RUN set -eux; \
             *.gz) gzip -dc "$dl" > "$out"; rm -f "$dl" ;; \
             *)    mv -f "$dl" "$out" ;; \
           esac; \
+          if [ "$VELOX_VERIFY_SIGNATURES" = "true" ]; then \
+            curl -fsSL --retry 3 --retry-delay 2 "${url%.gz}.sig" -o "${out}.sig"; \
+            if ! gpgv --keyring /opt/velociraptor/keys/velocidex-release.gpg \
+                "${out}.sig" "$out"; then \
+              echo "FATAL: bad Velocidex signature for $url" >&2; \
+              rm -f "$out" "${out}.sig"; \
+              return 1; \
+            fi; \
+            rm -f "${out}.sig"; \
+          fi; \
           return 0; \
         fi; \
         rm -f "$dl"; \
@@ -135,10 +153,18 @@ RUN set -eux; \
     chmod +x /opt/velociraptor/linux/velociraptor; \
     \
     echo "Downloading client binaries (tolerant):"; \
-    fetch_asset "${VELOX_URL_LINUX_AMD64}" "$LINUX_AMD64_V" linux-amd64 \
-                /opt/velociraptor/linux/velociraptor_client_amd64 false "${VELOX_SHA256_LINUX_AMD64}"; \
-    fetch_asset "${VELOX_URL_LINUX_ARM64}" "$LINUX_ARM64_V" linux-arm64 \
-                /opt/velociraptor/linux/velociraptor_client_arm64 false "${VELOX_SHA256_LINUX_ARM64}"; \
+    for arch in amd64 arm64; do \
+      if [ "$arch" = "$TARGETARCH" ]; then \
+        # The native Linux client is the server binary: hard link, no second copy.
+        ln /opt/velociraptor/linux/velociraptor /opt/velociraptor/linux/velociraptor_client_${arch}; \
+      elif [ "$arch" = amd64 ]; then \
+        fetch_asset "${VELOX_URL_LINUX_AMD64}" "$LINUX_AMD64_V" linux-amd64 \
+                    /opt/velociraptor/linux/velociraptor_client_amd64 false "${VELOX_SHA256_LINUX_AMD64}"; \
+      else \
+        fetch_asset "${VELOX_URL_LINUX_ARM64}" "$LINUX_ARM64_V" linux-arm64 \
+                    /opt/velociraptor/linux/velociraptor_client_arm64 false "${VELOX_SHA256_LINUX_ARM64}"; \
+      fi; \
+    done; \
     fetch_asset "${VELOX_URL_LINUX_AMD64_MUSL}" "$LINUX_AMD64_MUSL_V" linux-amd64-musl \
                 /opt/velociraptor/linux/velociraptor_client_amd64_musl false "${VELOX_SHA256_LINUX_AMD64_MUSL}"; \
     fetch_asset "${VELOX_URL_DARWIN_AMD64}" "$DARWIN_AMD64_V" darwin-amd64 \
@@ -152,25 +178,13 @@ RUN set -eux; \
     for f in /opt/velociraptor/linux/* /opt/velociraptor/mac/* /opt/velociraptor/windows/*.exe; do \
       if [ -s "$f" ]; then chmod +x "$f"; fi; \
     done; \
+    # Bake checksums next to each present binary so the entrypoint can
+    # detect upstream binary changes across rebuilds.
+    for f in /opt/velociraptor/linux/* /opt/velociraptor/mac/* /opt/velociraptor/windows/*; do \
+      case "$f" in *.sha256) continue ;; esac; \
+      if [ -s "$f" ]; then sha256sum "$f" | awk '{print $1}' > "${f}.sha256"; fi; \
+    done; \
     echo "Downloads done."
-
-# Bake checksums next to each present binary so the entrypoint can
-# detect upstream binary changes across rebuilds.
-RUN set -eux; \
-  for f in \
-    /opt/velociraptor/linux/velociraptor \
-    /opt/velociraptor/linux/velociraptor_client_amd64 \
-    /opt/velociraptor/linux/velociraptor_client_arm64 \
-    /opt/velociraptor/linux/velociraptor_client_amd64_musl \
-    /opt/velociraptor/mac/velociraptor_client_amd64 \
-    /opt/velociraptor/mac/velociraptor_client_arm64 \
-    /opt/velociraptor/windows/velociraptor_client.exe \
-    /opt/velociraptor/windows/velociraptor_client.msi \
-  ; do \
-    if [ -s "$f" ]; then \
-      sha256sum "$f" | awk '{print $1}' > "${f}.sha256"; \
-    fi; \
-  done
 
 # Bundle official custom definitions as immutable, verified build inputs.
 # The frontend loads this directory on every start via --definitions.
@@ -224,7 +238,21 @@ RUN set -eux; \
 
 WORKDIR /velociraptor
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD curl -fkso /dev/null "https://127.0.0.1:${VELOX_GUI_PORT:-8889}/" || exit 1
+# Small, frequently changing inputs last so the layers above stay cached.
+COPY --chmod=0755 entrypoint /entrypoint
+COPY --chmod=0755 healthcheck /usr/local/bin/velox-healthcheck
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+  CMD ["/usr/local/bin/velox-healthcheck"]
+
+ARG GIT_COMMIT
+ARG BUILD_DATE
+ARG BASE_IMAGE=ubuntu:26.04
+ENV VELOX_VERSION=${VELOX_VERSION} \
+    TARGETARCH=${TARGETARCH} \
+    GIT_COMMIT=${GIT_COMMIT:-unknown} \
+    BUILD_DATE=${BUILD_DATE:-unknown} \
+    BASE_IMAGE=${BASE_IMAGE} \
+    VELOX_TRIAGE_SOURCE_COMMIT=${TRIAGE_SOURCE_COMMIT}
 
 ENTRYPOINT ["/entrypoint"]

@@ -1,11 +1,21 @@
 name: build-publish
 
+# Builds natively on amd64 and arm64 runners and runs the full validation on
+# both. Publishing pushes each architecture by digest, validates the pushed
+# image itself, and only then creates the multi-arch tags.
+#
+#   pull_request / push to master  build + validate (master also warms the cache)
+#   push of a v* tag               build + validate + publish
+#   workflow_dispatch              build + validate; publishes only when
+#                                  dry_run is unchecked AND the ref is master
+#                                  or a v* tag (release-tag.yml uses this)
+
 on:
   push:
+    branches:
+      - master
     tags:
       - "v*"
-  # Every PR (including upstream-check bump PRs) gets the full amd64
-  # build + validation. The publish job never runs for pull requests.
   pull_request:
     branches:
       - master
@@ -14,7 +24,7 @@ on:
       dry_run:
         description: "Build + validate only, do not push"
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -25,20 +35,23 @@ concurrency:
 
 env:
   IMAGE: docker.io/xboarder56/velociraptor
-  BASE_IMAGE: ubuntu:26.04
+  # Previously published images the upgrade test starts from (multi-arch).
+  LEGACY_IMAGES: >-
+    docker.io/xboarder56/velociraptor:0.76.5@sha256:1f7d6a4b3785d5ec5e2b49b83029612f12181bdd410e00f17d120bccda84dfe6
+    docker.io/xboarder56/velociraptor:0.77.2@sha256:231bb2e69458fc5990557c0d713a2f1a8a29d2dcedc54da55a9394e699e4af8d
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  prepare:
+    runs-on: ubuntu-24.04
     outputs:
-      velox_version: ${{ steps.vars.outputs.velox_version }}
-      velox_version_bare: ${{ steps.vars.outputs.velox_version_bare }}
-      velox_minor: ${{ steps.vars.outputs.velox_minor }}
-      image_revision: ${{ steps.vars.outputs.image_revision }}
       build_args: ${{ steps.vars.outputs.build_args }}
-      base_image_digest: ${{ steps.base_digest.outputs.digest }}
+      velox_version: ${{ steps.vars.outputs.velox_version }}
+      tags: ${{ steps.plan.outputs.tags }}
+      publish: ${{ steps.plan.outputs.publish }}
+      base_image: ${{ steps.vars.outputs.base_image }}
+      base_digest: ${{ steps.vars.outputs.base_digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Read versions.env and lockfiles
         id: vars
@@ -46,156 +59,235 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC1091
           . ./versions.env
-          # shellcheck disable=SC1091
-          . ./binaries.lock
-          # shellcheck disable=SC1091
-          . ./artifacts.lock
-          velox_version_bare="${VELOX_VERSION#v}"
-          velox_minor="$(echo "$velox_version_bare" | cut -d. -f1,2)"
-          echo "velox_version=${VELOX_VERSION}"           >> "$GITHUB_OUTPUT"
-          echo "velox_version_bare=${velox_version_bare}" >> "$GITHUB_OUTPUT"
-          echo "velox_minor=${velox_minor}"               >> "$GITHUB_OUTPUT"
-          echo "image_revision=${IMAGE_REVISION}"         >> "$GITHUB_OUTPUT"
-
-          # Compose the per-asset build args for docker/build-push-action.
+          base_image="$(awk '/^FROM /{print $2; exit}' Dockerfile)"
           {
+            echo "velox_version=${VELOX_VERSION}"
+            echo "image_revision=${IMAGE_REVISION}"
+            echo "base_image=${base_image%@*}"
+            echo "base_digest=${base_image#*@}"
             echo "build_args<<EOF"
-            echo "VELOX_VERSION=${VELOX_VERSION}"
-            echo "BASE_IMAGE=${BASE_IMAGE}"
+            scripts/build-args.sh
             echo "GIT_COMMIT=${GITHUB_SHA::7}"
+            # Last in the Dockerfile, so a new date never invalidates the cache.
             echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "VELOX_VERSION_LINUX_AMD64=${LINUX_AMD64_VERSION}"
-            echo "VELOX_VERSION_LINUX_ARM64=${LINUX_ARM64_VERSION}"
-            echo "VELOX_VERSION_LINUX_AMD64_MUSL=${LINUX_AMD64_MUSL_VERSION}"
-            echo "VELOX_VERSION_DARWIN_AMD64=${DARWIN_AMD64_VERSION}"
-            echo "VELOX_VERSION_DARWIN_ARM64=${DARWIN_ARM64_VERSION}"
-            echo "VELOX_VERSION_WINDOWS_EXE=${WINDOWS_EXE_VERSION}"
-            echo "VELOX_VERSION_WINDOWS_MSI=${WINDOWS_MSI_VERSION}"
-            echo "VELOX_URL_LINUX_AMD64=${LINUX_AMD64_URL}"
-            echo "VELOX_URL_LINUX_ARM64=${LINUX_ARM64_URL}"
-            echo "VELOX_URL_LINUX_AMD64_MUSL=${LINUX_AMD64_MUSL_URL}"
-            echo "VELOX_URL_DARWIN_AMD64=${DARWIN_AMD64_URL}"
-            echo "VELOX_URL_DARWIN_ARM64=${DARWIN_ARM64_URL}"
-            echo "VELOX_URL_WINDOWS_EXE=${WINDOWS_EXE_URL}"
-            echo "VELOX_URL_WINDOWS_MSI=${WINDOWS_MSI_URL}"
-            echo "VELOX_SHA256_LINUX_AMD64=${LINUX_AMD64_SHA256}"
-            echo "VELOX_SHA256_LINUX_ARM64=${LINUX_ARM64_SHA256}"
-            echo "VELOX_SHA256_LINUX_AMD64_MUSL=${LINUX_AMD64_MUSL_SHA256}"
-            echo "VELOX_SHA256_DARWIN_AMD64=${DARWIN_AMD64_SHA256}"
-            echo "VELOX_SHA256_DARWIN_ARM64=${DARWIN_ARM64_SHA256}"
-            echo "VELOX_SHA256_WINDOWS_EXE=${WINDOWS_EXE_SHA256}"
-            echo "VELOX_SHA256_WINDOWS_MSI=${WINDOWS_MSI_SHA256}"
-            echo "TRIAGE_SOURCE_COMMIT=${TRIAGE_SOURCE_COMMIT}"
-            echo "TRIAGE_LINUX_UAC_URL=${TRIAGE_LINUX_UAC_URL}"
-            echo "TRIAGE_LINUX_UAC_SHA256=${TRIAGE_LINUX_UAC_SHA256}"
-            echo "TRIAGE_WINDOWS_TARGETS_URL=${TRIAGE_WINDOWS_TARGETS_URL}"
-            echo "TRIAGE_WINDOWS_TARGETS_SHA256=${TRIAGE_WINDOWS_TARGETS_SHA256}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: If triggered by tag, sanity-check tag matches versions.env
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Decide whether to publish, and the tags
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          VELOX_VERSION: ${{ steps.vars.outputs.velox_version }}
+          IMAGE_REVISION: ${{ steps.vars.outputs.image_revision }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/}"
-          expected_prefix="${{ steps.vars.outputs.velox_version }}"
-          # Acceptable forms: vX.Y.Z (matches VELOX_VERSION exactly) or vX.Y.Z-N (revisioned).
-          case "$tag" in
-            "$expected_prefix"|"$expected_prefix"-*) : ;;
-            *)
-              echo "Git tag '$tag' does not match versions.env VELOX_VERSION '$expected_prefix'." >&2
-              exit 1
-              ;;
+          publish=false
+          case "$EVENT" in
+            push)
+              [[ "$GITHUB_REF" == refs/tags/* ]] && publish=true ;;
+            workflow_dispatch)
+              if [ "$DRY_RUN" != "true" ]; then
+                case "$GITHUB_REF" in
+                  refs/heads/master|refs/tags/v*) publish=true ;;
+                  *)
+                    echo "::error::Publishing is only allowed from master or a v* tag (got $GITHUB_REF). Re-run with dry_run checked."
+                    exit 1 ;;
+                esac
+              fi ;;
           esac
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+          bare="${VELOX_VERSION#v}"
+          minor="$(cut -d. -f1,2 <<< "$bare")"
 
-      - name: Resolve base image digest
-        id: base_digest
-        run: |
-          set -euo pipefail
-          digest="$(docker buildx imagetools inspect "${BASE_IMAGE}" --format '{{.Manifest.Digest}}')"
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Base image ${BASE_IMAGE} digest: ${digest}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            # v<version> is revision 1; later revisions are v<version>-<rev>.
+            if [ "$tag" != "${VELOX_VERSION}-${IMAGE_REVISION}" ] && \
+               { [ "$tag" != "$VELOX_VERSION" ] || [ "$IMAGE_REVISION" != 1 ]; }; then
+              echo "::error::Tag '$tag' does not match versions.env (${VELOX_VERSION}, revision ${IMAGE_REVISION})."
+              exit 1
+            fi
+          fi
 
-      - name: Build amd64 image for validation
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          tags: velociraptor:smoke
-          build-args: ${{ steps.vars.outputs.build_args }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Moving tags only move forward: `latest` when this is the newest
+          # Velociraptor version released here, the minor tag when it is the
+          # newest of its minor line.
+          git fetch --quiet --tags origin
+          released="$(git tag -l 'v[0-9]*' | sed -E 's/^v//; s/-[0-9]+$//' | sort -uV)"
+          newest="$(printf '%s\n%s\n' "$released" "$bare" | sed '/^$/d' | sort -V | tail -n1)"
+          newest_minor="$(printf '%s\n%s\n' "$released" "$bare" | grep -E "^${minor//./\\.}\." | sort -V | tail -n1)"
 
-      - name: Validate built image
-        env:
-          IMAGE: velociraptor:smoke
-        run: ./scripts/ci-image-validation.sh
+          tags=(
+            "${IMAGE}:${bare}"
+            "${IMAGE}:${bare}-${IMAGE_REVISION}"
+            "${IMAGE}:sha-${GITHUB_SHA::7}"
+          )
+          if [ "$bare" = "$newest_minor" ]; then tags+=("${IMAGE}:${minor}"); fi
+          if [ "$bare" = "$newest" ]; then tags+=("${IMAGE}:latest"); fi
 
-      - name: Validate config modes and secret files
-        env:
-          IMAGE: velociraptor:smoke
-          # Real upgrade test from the currently published image.
-          LEGACY_IMAGE: docker.io/xboarder56/velociraptor:latest
-        run: ./scripts/ci-config-modes-validation.sh
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "tags=${tags[*]}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Plan"
+            echo "- Publish: \`${publish}\`"
+            echo "- Tags: \`${tags[*]}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  publish:
-    needs: test
-    # Publish only for tag pushes, or manual runs with dry_run unchecked.
-    # Never for pull_request events (inputs.dry_run is empty there).
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.dry_run != true) }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    name: Build and validate ${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        if: needs.prepare.outputs.publish == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compute image tags + OCI labels
+      - name: Image labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=${{ needs.test.outputs.velox_version_bare }}
-            type=raw,value=${{ needs.test.outputs.velox_minor }}
-            type=sha,prefix=sha-,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-          # metadata-action already auto-injects: created, description, licenses,
-          # revision, source, title, url, version. We override `version` to
-          # point at the upstream Velociraptor release (not the build tag),
-          # and add custom labels it doesn't manage.
           labels: |
             org.opencontainers.image.title=Velociraptor
             org.opencontainers.image.description=Velociraptor (Velocidex) server in a Docker container with prebuilt client repacks
-            org.opencontainers.image.version=${{ needs.test.outputs.velox_version }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.velox_version }}
             org.opencontainers.image.documentation=https://github.com/Xboarder56/velociraptor-docker#readme
             org.opencontainers.image.vendor=Xboarder56
             org.opencontainers.image.authors=Xboarder56 <https://github.com/Xboarder56>
-            org.opencontainers.image.base.name=${{ env.BASE_IMAGE }}
-            org.opencontainers.image.base.digest=${{ needs.test.outputs.base_image_digest }}
+            org.opencontainers.image.base.name=${{ needs.prepare.outputs.base_image }}
+            org.opencontainers.image.base.digest=${{ needs.prepare.outputs.base_digest }}
 
-      - name: Build + push multi-arch
-        uses: docker/build-push-action@v6
+      - name: Build for validation
+        if: needs.prepare.outputs.publish != 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: velociraptor:smoke
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: ${{ needs.test.outputs.build_args }}
-          provenance: true
+          build-args: ${{ needs.prepare.outputs.build_args }}
+          cache-from: type=gha,scope=velociraptor-${{ matrix.arch }}
+          cache-to: type=gha,scope=velociraptor-${{ matrix.arch }},mode=max
+
+      - name: Build and push by digest
+        id: push
+        if: needs.prepare.outputs.publish == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ needs.prepare.outputs.build_args }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
           sbom: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=velociraptor-${{ matrix.arch }}
+          cache-to: type=gha,scope=velociraptor-${{ matrix.arch }},mode=max
+
+      - name: Pull the pushed image for validation
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "${IMAGE}@${DIGEST}"
+          docker tag "${IMAGE}@${DIGEST}" velociraptor:smoke
+
+      - name: Validate image (server, GUI/API, artifacts, bundles, enrollment, collection)
+        env:
+          IMAGE: velociraptor:smoke
+          CLIENT_ARCH: ${{ matrix.arch }}
+        run: ./scripts/ci-image-validation.sh
+
+      - name: Validate config modes, secrets and upgrades from published images
+        env:
+          IMAGE: velociraptor:smoke
+        run: ./scripts/ci-config-modes-validation.sh
+
+      - name: Record digest
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p digests
+          touch "digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: needs.prepare.outputs.publish == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    # One publish at a time, never cancelled half-way: moving tags are only
+    # ever written by one run.
+    concurrency:
+      group: velociraptor-publish
+      cancel-in-progress: false
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create multi-arch tags from the validated digests
+        env:
+          TAGS: ${{ needs.prepare.outputs.tags }}
+        run: |
+          set -euo pipefail
+          sources=()
+          for f in digests/*; do sources+=("${IMAGE}@sha256:$(basename "$f")"); done
+          [ "${#sources[@]}" -eq 2 ] || { echo "expected 2 digests, got ${#sources[@]}" >&2; exit 1; }
+          tag_args=()
+          for t in $TAGS; do tag_args+=(-t "$t"); done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+
+      - name: Verify published tags
+        env:
+          TAGS: ${{ needs.prepare.outputs.tags }}
+        run: |
+          set -euo pipefail
+          first=""
+          for t in $TAGS; do
+            digest="$(docker buildx imagetools inspect "$t" --format '{{.Manifest.Digest}}')"
+            arches="$(docker buildx imagetools inspect "$t" --format '{{range .Manifest.Manifests}}{{.Platform.Architecture}} {{end}}')"
+            echo "$t $digest $arches"
+            [[ "$arches" == *amd64* && "$arches" == *arm64* ]] || { echo "$t is missing an architecture" >&2; exit 1; }
+            [ -z "$first" ] && first="$digest"
+            [ "$digest" = "$first" ] || { echo "$t points at a different digest" >&2; exit 1; }
+          done
+          echo "### Published \`$first\`" >> "$GITHUB_STEP_SUMMARY"
+          for t in $TAGS; do echo "- \`$t\`" >> "$GITHUB_STEP_SUMMARY"; done

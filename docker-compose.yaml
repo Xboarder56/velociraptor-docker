@@ -1,7 +1,7 @@
 # Reference docker-compose for docker.io/xboarder56/velociraptor.
 #
 # Copy this file to your deployment directory, then:
-#   1. cp .env.example .env  &&  edit .env with your secrets
+#   1. cp .env.example .env  &&  edit .env with your settings
 #   2. docker compose up -d
 #
 # Settings prefixed with `${...}` in `environment:` come from your `.env`
@@ -9,16 +9,39 @@
 
 services:
   velociraptor:
-    # Pin to a specific image for reproducibility. Switch to `:latest`
+    # Pin to a specific image for reproducibility. `0.77.3` follows image
+    # revisions of that release; `0.77.3-1` never changes. Switch to `:latest`
     # if you'd rather always run the newest build.
     image: docker.io/xboarder56/velociraptor:0.77.3
     restart: unless-stopped
     stop_grace_period: 30s
 
-    # Container exposes its own HEALTHCHECK against the GUI port; compose
-    # surfaces it via `docker compose ps`.
+    # tini as PID 1: reaps zombies and forwards signals to the server.
+    init: true
+    # The entrypoint starts as root only to prepare the volume, then runs the
+    # server as an unprivileged user (VELOX_UID/VELOX_GID). Nothing in the
+    # container needs to gain privileges after that.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN             # hand the data volume to the server user
+      - DAC_OVERRIDE      # read root-owned files left by older images
+      - FOWNER            # chmod the config (it holds private keys)
+      - SETUID            # drop to the server user
+      - SETGID
+      - NET_BIND_SERVICE  # only needed for listen ports below 1024
+    pids_limit: 4096
+    # Velociraptor holds hunt results and uploads in memory while processing;
+    # size this to your deployment instead of letting it take the whole host.
+    mem_limit: ${VELOX_MEM_LIMIT:-4g}
+
+    # The image's HEALTHCHECK probes the GUI listener; `docker compose ps`
+    # shows the result.
 
     # Persist config, keys, data, and repacked client bundles.
+    # Extra artifact packs: drop *.yaml files into ./velodata/artifacts.
     volumes:
       - ./velodata:/velociraptor
 
@@ -49,26 +72,45 @@ services:
       # --- Bootstrap admin user (change before exposing publicly) ---
       VELOX_DEFAULT_USER: ${VELOX_DEFAULT_USER:-admin}
       # Empty values let the entrypoint retain its backward-compatible default.
-      # Set only one password source; for _FILE, also mount the secret there.
+      # Set only one password source; for _FILE see the `secrets:` example below.
       VELOX_DEFAULT_PASSWORD: ${VELOX_DEFAULT_PASSWORD:-}
       VELOX_DEFAULT_PASSWORD_FILE: ${VELOX_DEFAULT_PASSWORD_FILE:-}
       VELOX_DEFAULT_USER_ROLE: ${VELOX_DEFAULT_USER_ROLE:-administrator}
 
-      # --- Public URL clients use to reach this server ---
-      # For a simple setup, just the hostname is enough.
-      VELOX_FRONTEND_HOSTNAME: ${VELOX_FRONTEND_HOSTNAME:-velociraptor.example.com}
-      # VELOX_FRONTEND_PORT: 8000
+      # --- Public address clients use to reach this server ---
+      # Optional. Left empty, clients point at `localhost` (fine for a
+      # single-host lab; the log warns). Set it to a DNS name or IP your
+      # endpoints can reach before deploying clients.
+      VELOX_FRONTEND_HOSTNAME: ${VELOX_FRONTEND_HOSTNAME:-}
+      # VELOX_FRONTEND_PORT: 8000           # public port, if it differs (e.g. 443 behind a proxy)
       # VELOX_FRONTEND_SERVER_SCHEME: https
 
       # --- Public URL for the admin GUI (only set if different from above) ---
       # VELOX_GUI_HOSTNAME: admin.example.com
-      # VELOX_GUI_PORT: 8889
+      # VELOX_GUI_PORT: 8889                # public port, if it differs
       # VELOX_GUI_SCHEME: https
 
       # --- Full-URL overrides (use for reverse-proxy / split DNS setups) ---
+      # These describe the public side only; the container keeps listening
+      # on 8000/8889 (VELOX_FRONTEND_BIND_PORT / VELOX_GUI_BIND_PORT).
       # VELOX_FRONTEND_SERVER_URL: https://ingest.example.com/
       # VELOX_GUI_URL: https://admin.example.com/app/index.html
 
+      # --- Server account (match your host user for easier bind-mount access) ---
+      # VELOX_UID: 10001
+      # VELOX_GID: 10001
+
       # --- Logging ---
-      # `true` enables -v on the server (DEBUG-level). Default is off.
+      # `true` (the default) runs the server with -v (DEBUG-level logs).
       # VELOX_START_SERVER_VERBOSE: "false"
+
+    # --- Docker secret for the bootstrap password (optional) ---
+    # 1. echo 'a-strong-password' > secrets/velociraptor_admin_password
+    # 2. uncomment these lines and the top-level `secrets:` block below
+    # 3. set VELOX_DEFAULT_PASSWORD_FILE=/run/secrets/velociraptor_admin_password in .env
+    # secrets:
+    #   - velociraptor_admin_password
+
+# secrets:
+#   velociraptor_admin_password:
+#     file: ./secrets/velociraptor_admin_password

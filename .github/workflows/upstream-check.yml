@@ -10,6 +10,11 @@ name: upstream-check
 # best-newest-patch logic naturally pins that platform to its own most
 # recent available patch (no special-case fallback needed).
 
+# Bump PRs are opened with GITHUB_TOKEN, which does not trigger pull_request
+# workflows; this workflow therefore dispatches build-publish (dry run) on the
+# bump branch itself. Merging the PR triggers release-tag.yml, which tags and
+# publishes.
+
 on:
   schedule:
     # Daily at 13:00 UTC. Velocidex ships on the order of weeks; once a
@@ -25,6 +30,8 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write   # dispatch the bump build; keep this schedule enabled
+  issues: write    # report failures
 
 jobs:
   check:
@@ -36,7 +43,7 @@ jobs:
       # Order matters only for printing.
       ASSET_KEYS: "LINUX_AMD64 LINUX_ARM64 LINUX_AMD64_MUSL DARWIN_AMD64 DARWIN_ARM64 WINDOWS_EXE WINDOWS_MSI"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Resolve per-asset latest patches and sha256s
         id: resolve
@@ -118,31 +125,65 @@ jobs:
               "repos/${TRIAGE_REPO}/branches/gh-pages" --jq '.commit.sha'
           )"
           TRIAGE_BASE="https://raw.githubusercontent.com/${TRIAGE_REPO}/${TRIAGE_COMMIT}/docs"
-          TRIAGE_LINUX_UAC_URL="${TRIAGE_BASE}/linux.triage.uac/Linux.Triage.UAC.yaml"
-          TRIAGE_WINDOWS_TARGETS_URL="${TRIAGE_BASE}/windows.triage.targets/Windows.Triage.Targets.yaml"
+          TRIAGE_LINUX_UAC_URL_NEW="${TRIAGE_BASE}/linux.triage.uac/Linux.Triage.UAC.yaml"
+          TRIAGE_WINDOWS_TARGETS_URL_NEW="${TRIAGE_BASE}/windows.triage.targets/Windows.Triage.Targets.yaml"
 
           tmp="$(mktemp)"
-          curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$TRIAGE_LINUX_UAC_URL"
+          curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$TRIAGE_LINUX_UAC_URL_NEW"
           TRIAGE_LINUX_UAC_SHA256="$(sha256sum "$tmp" | awk '{print $1}')"
-          curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$TRIAGE_WINDOWS_TARGETS_URL"
+          curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$TRIAGE_WINDOWS_TARGETS_URL_NEW"
           TRIAGE_WINDOWS_TARGETS_SHA256="$(sha256sum "$tmp" | awk '{print $1}')"
           rm -f "$tmp"
+          TRIAGE_LINUX_UAC_SHA256_NEW="$TRIAGE_LINUX_UAC_SHA256"
+          TRIAGE_WINDOWS_TARGETS_SHA256_NEW="$TRIAGE_WINDOWS_TARGETS_SHA256"
 
-          # Pick the main VELOX_VERSION as the newest patch across all platforms.
-          NEW_VELOX_VERSION="$(printf '%s\n' "${VERSION[@]}" | sort -V -r | head -n1)"
+          # The image version is the server's version: both Linux server
+          # binaries must be on the same patch. Until upstream has published
+          # both, wait instead of building a mixed image.
+          if [ "${VERSION[LINUX_AMD64]}" != "${VERSION[LINUX_ARM64]}" ]; then
+            echo "::notice::Waiting for upstream: linux-amd64 is ${VERSION[LINUX_AMD64]}, linux-arm64 is ${VERSION[LINUX_ARM64]}."
+            echo "wait=true" >> "$GITHUB_OUTPUT"
+          fi
+          NEW_VELOX_VERSION="${VERSION[LINUX_AMD64]}"
           echo "new_velox_version=${NEW_VELOX_VERSION}"
           echo "new_velox_version=${NEW_VELOX_VERSION}" >> "$GITHUB_OUTPUT"
 
-          # Surface any asset that is pinned behind the main version so a
-          # mixed-version image is obvious in the PR instead of silent.
+          # Client assets behind the server version are allowed (upstream
+          # sometimes never ships one), but only once the release is 48h old:
+          # Velocidex often uploads some assets hours after publishing.
           LAGGING=""
           for key in $ASSET_KEYS; do
             if [ "${VERSION[$key]}" != "$NEW_VELOX_VERSION" ]; then
-              echo "::warning::$key pinned to ${VERSION[$key]} (main version ${NEW_VELOX_VERSION})"
+              echo "::warning::$key pinned to ${VERSION[$key]} (server version ${NEW_VELOX_VERSION})"
               LAGGING="${LAGGING}${key}=${VERSION[$key]} "
             fi
           done
           echo "lagging_assets=${LAGGING% }" >> "$GITHUB_OUTPUT"
+          if [ -n "$LAGGING" ]; then
+            published="$(jq -r --arg v "$NEW_VELOX_VERSION" \
+              '[.[] | select(.assets[].name | startswith("velociraptor-" + $v + "-linux-amd64"))][0].published_at // empty' releases.json)"
+            if [ -n "$published" ] && [ $(( $(date +%s) - $(date -d "$published" +%s) )) -lt 172800 ]; then
+              echo "::notice::Release ${NEW_VELOX_VERSION} is less than 48h old and still missing assets; waiting."
+              echo "wait=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          # Hash the Triage definitions without their generated "Commit <sha> on
+          # <time>" line, so a rebuild upstream that changes nothing else does
+          # not cause an image revision.
+          norm_sha() { curl -fsSL --retry 3 --retry-delay 2 "$1" | grep -vE '^[[:space:]]*Commit [0-9a-f]{7,40} on [0-9TZ:.-]+[[:space:]]*$' | sha256sum | awk '{print $1}'; }
+          # shellcheck disable=SC1091
+          . ./artifacts.lock
+          if [ "$(norm_sha "$TRIAGE_LINUX_UAC_URL")" = "$(norm_sha "$TRIAGE_LINUX_UAC_URL_NEW")" ] && \
+             [ "$(norm_sha "$TRIAGE_WINDOWS_TARGETS_URL")" = "$(norm_sha "$TRIAGE_WINDOWS_TARGETS_URL_NEW")" ]; then
+            echo "triage_content_changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "triage_content_changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          TRIAGE_LINUX_UAC_URL="$TRIAGE_LINUX_UAC_URL_NEW"
+          TRIAGE_WINDOWS_TARGETS_URL="$TRIAGE_WINDOWS_TARGETS_URL_NEW"
+          TRIAGE_LINUX_UAC_SHA256="$TRIAGE_LINUX_UAC_SHA256_NEW"
+          TRIAGE_WINDOWS_TARGETS_SHA256="$TRIAGE_WINDOWS_TARGETS_SHA256_NEW"
 
           mkdir -p .upstream-check
           {
@@ -221,6 +262,10 @@ jobs:
             BINARIES_CHANGED=true
           fi
 
+          # Triage pins only matter when the definitions' content changed.
+          if [ "${{ steps.resolve.outputs.triage_content_changed }}" != "true" ]; then
+            cp artifacts.lock .upstream-check/artifacts.lock.new
+          fi
           if diff -q \
               <(grep -vE '^\s*(#|$)' artifacts.lock | sort) \
               <(grep -vE '^\s*(#|$)' .upstream-check/artifacts.lock.new | sort) \
@@ -231,8 +276,18 @@ jobs:
           fi
 
           FORCE="${{ inputs.force_revision_bump }}"
+          NEWEST="$(printf '%s\n%s\n' "$OLD_VELOX_VERSION" "$NEW_VELOX_VERSION" | sort -V | tail -n1)"
 
-          if [ "$OLD_VELOX_VERSION" != "$NEW_VELOX_VERSION" ]; then
+          if [ "${{ steps.resolve.outputs.wait }}" = "true" ]; then
+            echo "Upstream release is incomplete; nothing to do yet."
+            CHANGED=false
+            NEW_IMAGE_REVISION="$OLD_IMAGE_REVISION"
+            REASON=""
+          elif [ "$OLD_VELOX_VERSION" != "$NEW_VELOX_VERSION" ] && [ "$NEWEST" = "$OLD_VELOX_VERSION" ] && [ "$FORCE" != "true" ]; then
+            # A pulled/yanked upstream release would otherwise look like a bump.
+            echo "::error::Upstream's newest server is ${NEW_VELOX_VERSION}, older than the pinned ${OLD_VELOX_VERSION}. Refusing to downgrade (re-run with force_revision_bump to override)."
+            exit 1
+          elif [ "$OLD_VELOX_VERSION" != "$NEW_VELOX_VERSION" ]; then
             REASON="upstream version bump: ${OLD_VELOX_VERSION} -> ${NEW_VELOX_VERSION}"
             NEW_IMAGE_REVISION=1
             CHANGED=true
@@ -277,11 +332,14 @@ jobs:
           mv .upstream-check/artifacts.lock.new artifacts.lock
           rm -rf .upstream-check releases.json all-assets.tsv
 
-      - name: Open PR
+      - name: Open or update the bump PR
+        id: pr
         if: steps.decide.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
         with:
-          branch: upstream-check/${{ steps.decide.outputs.new_velox_version }}-rev${{ steps.decide.outputs.new_image_revision }}
+          # One branch for every bump: a newer upstream release updates the
+          # open PR instead of leaving a superseded one behind.
+          branch: upstream-check/bump
           commit-message: |
             chore(upstream): bump to ${{ steps.decide.outputs.new_velox_version }}-${{ steps.decide.outputs.new_image_revision }}
 
@@ -294,7 +352,37 @@ jobs:
 
             **Velociraptor version:** `${{ steps.decide.outputs.new_velox_version }}`
             **Image revision:** `${{ steps.decide.outputs.new_image_revision }}`
-            **Assets pinned behind the main version:** `${{ steps.resolve.outputs.lagging_assets || 'none' }}`
+            **Assets pinned behind the server version:** `${{ steps.resolve.outputs.lagging_assets || 'none' }}`
 
-            When merged, tag this commit `${{ steps.decide.outputs.new_velox_version }}-${{ steps.decide.outputs.new_image_revision }}` (or `${{ steps.decide.outputs.new_velox_version }}` for the first revision) to trigger the publish workflow.
+            The build and full validation run as a `build-publish` dry run on this branch (see the Actions tab; PRs opened by GITHUB_TOKEN get no PR checks).
+            Merging publishes automatically: `release-tag.yml` tags the merge commit and runs the release build.
           delete-branch: true
+
+      - name: Build and validate the bump branch
+        if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+        env:
+          PR_URL: ${{ steps.pr.outputs.pull-request-url }}
+        run: |
+          set -euo pipefail
+          gh workflow run build-publish.yml --ref upstream-check/bump -f dry_run=true
+          gh pr comment "$PR_URL" --body "Started a \`build-publish\` dry run on \`upstream-check/bump\` ($(date -u +%Y-%m-%dT%H:%MZ)). Merge once it is green."
+
+      # GitHub disables scheduled workflows after 60 days without repository
+      # activity; re-enabling resets that timer.
+      - name: Keep this schedule enabled
+        if: always() && github.event_name == 'schedule'
+        run: gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/upstream-check.yml/enable"
+
+      - name: Report a failed check
+        if: failure() && github.event_name == 'schedule'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="upstream-check is failing"
+          existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --title "$title" --body "The scheduled upstream check failed: $RUN_URL"
+          fi

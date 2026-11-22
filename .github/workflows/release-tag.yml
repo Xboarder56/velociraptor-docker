@@ -1,0 +1,66 @@
+name: release-tag
+
+# Publishes every merged release: when versions.env changes on master (an
+# upstream bump, or an IMAGE_REVISION bump for our own fixes), tag the merge
+# commit and run the release build for that tag.
+#
+# Tags pushed with GITHUB_TOKEN do not trigger other workflows, so the build
+# is started explicitly with workflow_dispatch (which GITHUB_TOKEN may do).
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - versions.env
+  workflow_dispatch:
+
+permissions:
+  contents: write   # push the release tag
+  actions: write    # start build-publish for it
+
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Tag and publish
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . ./versions.env
+          if ! [[ "$VELOX_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$IMAGE_REVISION" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Unexpected versions.env contents: VELOX_VERSION=$VELOX_VERSION IMAGE_REVISION=$IMAGE_REVISION"
+            exit 1
+          fi
+          if [ "$IMAGE_REVISION" = 1 ]; then
+            tag="$VELOX_VERSION"
+          else
+            tag="${VELOX_VERSION}-${IMAGE_REVISION}"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            if [ "$(git rev-list -n1 "$tag")" = "$GITHUB_SHA" ]; then
+              echo "Tag $tag already points at this commit; (re)starting its build."
+            else
+              echo "::notice::Tag $tag already exists on another commit; nothing to publish. Bump IMAGE_REVISION to release this commit."
+              exit 0
+            fi
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "Release $tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
+          fi
+
+          gh workflow run build-publish.yml --ref "$tag" -f dry_run=false
+          echo "### Released \`$tag\` — build-publish started" >> "$GITHUB_STEP_SUMMARY"
