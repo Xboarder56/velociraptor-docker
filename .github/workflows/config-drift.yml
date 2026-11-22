@@ -1,0 +1,35 @@
+name: config-drift
+
+# Manually compare the server config of two Velociraptor releases (the same
+# check upstream-check runs on every version bump).
+
+on:
+  workflow_dispatch:
+    inputs:
+      old:
+        description: "Old release (e.g. v0.77.2) or linux-amd64 asset URL"
+        required: true
+      new:
+        description: "New release (e.g. v0.77.3) or linux-amd64 asset URL"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Compare
+        env:
+          OLD: ${{ inputs.old }}
+          NEW: ${{ inputs.new }}
+        run: |
+          set -euo pipefail
+          rc=0
+          scripts/config-drift.sh "$OLD" "$NEW" report.md || rc=$?
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          cat report.md
+          # 1 = differences (informational); 2 = the new release cannot load the old config
+          [ "$rc" -ne 2 ]
