@@ -1,5 +1,30 @@
-# Base image pinned by digest (Dependabot keeps it current). CI reads this
-# line to record the base image name and digest in the image labels.
+# Base image pinned by digest (Dependabot keeps it current). CI reads the
+# first FROM line to record the base image name and digest in the labels.
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS sigma
+
+# Velocidex Sigma / Hayabusa pack, pinned by artifacts.lock. Extracted in this
+# throwaway stage so the runtime image needs no unzip. SIGMA_ARTIFACTS lists
+# "<file in the pack>:<artifact name>"; each output is named after its artifact.
+ARG SIGMA_ARTIFACTS_URL=
+ARG SIGMA_ARTIFACTS_SHA256=
+ARG SIGMA_ARTIFACTS=
+RUN set -eux; \
+    if [ -z "$SIGMA_ARTIFACTS_URL" ] || [ -z "$SIGMA_ARTIFACTS_SHA256" ] || [ -z "$SIGMA_ARTIFACTS" ]; then \
+      echo "FATAL: SIGMA_ARTIFACTS_URL, SIGMA_ARTIFACTS_SHA256 and SIGMA_ARTIFACTS are required (see scripts/build.sh)" >&2; \
+      exit 1; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl unzip; \
+    curl -fL --retry 3 --retry-delay 2 "$SIGMA_ARTIFACTS_URL" -o /tmp/sigma.zip; \
+    echo "$SIGMA_ARTIFACTS_SHA256  /tmp/sigma.zip" | sha256sum -c -; \
+    mkdir -p /out; \
+    for pair in $SIGMA_ARTIFACTS; do \
+      src="${pair%%:*}" name="${pair#*:}"; \
+      unzip -p /tmp/sigma.zip "output/${src}.yaml" > "/out/${name}.yaml"; \
+      grep -qx "name: ${name}" "/out/${name}.yaml"; \
+    done; \
+    ls -l /out
+
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 ARG VELOX_VERSION
@@ -45,6 +70,7 @@ ARG VELOX_VERIFY_SIGNATURES=true
 
 # Official Velocidex Triage definitions, pinned by artifacts.lock.
 ARG TRIAGE_SOURCE_COMMIT=unknown
+ARG SIGMA_SOURCE_COMMIT=unknown
 ARG TRIAGE_LINUX_UAC_URL=
 ARG TRIAGE_LINUX_UAC_SHA256=
 ARG TRIAGE_WINDOWS_TARGETS_URL=
@@ -186,13 +212,17 @@ RUN set -eux; \
     done; \
     echo "Downloads done."
 
+COPY --from=sigma /out/ /opt/velociraptor/artifacts/
+
 # Bundle official custom definitions as immutable, verified build inputs.
 # The frontend loads this directory on every start via --definitions.
-# Velociraptor v0.77.3 added a lint requiring artifacts that call tempfile()
-# to declare FILESYSTEM_WRITE. The upstream Triage definitions do not declare
-# it yet (they load and run fine). Keep the definitions byte-identical to the
-# pinned upstream files and tolerate only that exact lint; any other
-# verification error still fails the build.
+# All bundled definitions are verified together; two known upstream lint
+# issues are tolerated, matched exactly, while any other error fails the build:
+#   * v0.77.3 requires artifacts calling tempfile() to declare FILESYSTEM_WRITE;
+#     the Triage definitions do not yet (they load and run fine).
+#   * `verify` cannot lex the 1.1 MB base64 rules literal embedded in
+#     Windows.Hayabusa.Rules; the server parses and runs it fine (the CI
+#     smoke test checks the server loads it).
 RUN set -eux; \
   fetch_definition() { \
     local url="$1" out="$2" expect_sha="$3" actual_sha; \
@@ -218,12 +248,12 @@ RUN set -eux; \
     /opt/velociraptor/artifacts/Windows.Triage.Targets.yaml \
     "$TRIAGE_WINDOWS_TARGETS_SHA256"; \
   if ! /opt/velociraptor/linux/velociraptor artifacts verify --builtin \
-      /opt/velociraptor/artifacts/Linux.Triage.UAC.yaml \
-      /opt/velociraptor/artifacts/Windows.Triage.Targets.yaml \
+      /opt/velociraptor/artifacts/*.yaml \
       > /tmp/verify.log 2>&1; then \
-    cat /tmp/verify.log; \
+    cut -c1-400 /tmp/verify.log; \
     if grep -E '^ERROR: ' /tmp/verify.log \
         | grep -v -E "^ERROR: (Linux\.Triage\.UAC|Windows\.Triage\.Targets): \(0,0\) required_permissions: Add FILESYSTEM_WRITE to artifact's required_permissions or implied_permissions fields$" \
+        | grep -v -E '^ERROR: artifact_set: While parsing source query : de\(string=\|"H4sI[A-Za-z0-9+/]*: 1:[0-9]+: lexer: invalid input text "\\"H4sI[A-Za-z0-9+/]*\.\.\.": name: Windows\.Hayabusa\.Rules$' \
         | grep -q .; then \
       echo "FATAL: bundled artifact verification failed" >&2; \
       exit 1; \
@@ -232,7 +262,7 @@ RUN set -eux; \
       echo "FATAL: artifact verification failed without reporting errors" >&2; \
       exit 1; \
     fi; \
-    echo "WARNING: tolerated known upstream FILESYSTEM_WRITE lint in Triage definitions"; \
+    echo "WARNING: tolerated known upstream lint issues (Triage FILESYSTEM_WRITE, Hayabusa rules literal)"; \
   fi; \
   rm -f /tmp/verify.log
 
@@ -253,6 +283,7 @@ ENV VELOX_VERSION=${VELOX_VERSION} \
     GIT_COMMIT=${GIT_COMMIT:-unknown} \
     BUILD_DATE=${BUILD_DATE:-unknown} \
     BASE_IMAGE=${BASE_IMAGE} \
-    VELOX_TRIAGE_SOURCE_COMMIT=${TRIAGE_SOURCE_COMMIT}
+    VELOX_TRIAGE_SOURCE_COMMIT=${TRIAGE_SOURCE_COMMIT} \
+    VELOX_SIGMA_SOURCE_COMMIT=${SIGMA_SOURCE_COMMIT}
 
 ENTRYPOINT ["/entrypoint"]

@@ -4,21 +4,21 @@ name: build-publish
 # both. Publishing pushes each architecture by digest, validates the pushed
 # image itself, and only then creates the multi-arch tags.
 #
-#   pull_request / push to master  build + validate (master also warms the cache)
+#   pull_request / push to main  build + validate (main also warms the cache)
 #   push of a v* tag               build + validate + publish
 #   workflow_dispatch              build + validate; publishes only when
-#                                  dry_run is unchecked AND the ref is master
+#                                  dry_run is unchecked AND the ref is main
 #                                  or a v* tag (release-tag.yml uses this)
 
 on:
   push:
     branches:
-      - master
+      - main
     tags:
       - "v*"
   pull_request:
     branches:
-      - master
+      - main
   workflow_dispatch:
     inputs:
       dry_run:
@@ -89,9 +89,9 @@ jobs:
             workflow_dispatch)
               if [ "$DRY_RUN" != "true" ]; then
                 case "$GITHUB_REF" in
-                  refs/heads/master|refs/tags/v*) publish=true ;;
+                  refs/heads/main|refs/tags/v*) publish=true ;;
                   *)
-                    echo "::error::Publishing is only allowed from master or a v* tag (got $GITHUB_REF). Re-run with dry_run checked."
+                    echo "::error::Publishing is only allowed from main or a v* tag (got $GITHUB_REF). Re-run with dry_run checked."
                     exit 1 ;;
                 esac
               fi ;;
