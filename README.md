@@ -247,9 +247,9 @@ The generated definitions are pinned to an immutable upstream commit, verified b
 This repo uses two GitHub Actions workflows:
 
 - **`upstream-check.yml`** runs daily. It polls the Velocidex release feed and the official Triage artifact project. If it sees a newer release, re-published binaries, or updated Triage definitions, it opens a PR bumping the corresponding lockfiles. Both raw and gzipped (`.gz`, used since v0.77.3) upstream assets are supported; downloads are checked against GitHub's published asset digests. For platforms upstream hasn't published yet for the latest release, the workflow walks back through prior releases and pins those assets to the most recent release that does include them, and lists any such lagging assets in the PR body.
-- **`build-publish.yml`** runs on tag pushes matching `v*` and on manual dispatch. It:
-  1. Builds an amd64 image and runs `scripts/ci-image-validation.sh` against it (server starts, GUI responds, a repacked Linux client makes contact).
-  2. Only if validation passes, does a multi-arch (`linux/amd64`, `linux/arm64`) buildx build and pushes to Docker Hub with provenance + SBOM attestations.
+- **`build-publish.yml`** runs on pull requests to `master`, tag pushes matching `v*`, and manual dispatch. It:
+  1. Builds an amd64 image and runs `scripts/ci-image-validation.sh` (server starts, GUI responds, a repacked Linux client makes contact, the musl client runs on Alpine) and `scripts/ci-config-modes-validation.sh` (config modes, secrets, input handling, and a real upgrade from the published `:latest` image).
+  2. For tag pushes and non-dry-run manual dispatches only (never pull requests), and only if validation passes, does a multi-arch (`linux/amd64`, `linux/arm64`) buildx build and pushes to Docker Hub with provenance + SBOM attestations.
 
 To cut a release:
 

@@ -4,12 +4,24 @@ on:
   push:
     tags:
       - "v*"
+  # Every PR (including upstream-check bump PRs) gets the full amd64
+  # build + validation. The publish job never runs for pull requests.
+  pull_request:
+    branches:
+      - master
   workflow_dispatch:
     inputs:
       dry_run:
         description: "Build + validate only, do not push"
         type: boolean
         default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-publish-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE: docker.io/xboarder56/velociraptor
@@ -126,11 +138,15 @@ jobs:
       - name: Validate config modes and secret files
         env:
           IMAGE: velociraptor:smoke
+          # Real upgrade test from the currently published image.
+          LEGACY_IMAGE: docker.io/xboarder56/velociraptor:latest
         run: ./scripts/ci-config-modes-validation.sh
 
   publish:
     needs: test
-    if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
+    # Publish only for tag pushes, or manual runs with dry_run unchecked.
+    # Never for pull_request events (inputs.dry_run is empty there).
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.dry_run != true) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
