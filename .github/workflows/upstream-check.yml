@@ -1,7 +1,8 @@
 name: upstream-check
 
 # Polls Velocidex/velociraptor releases. Velocidex has used both minor release
-# tags (v0.76 containing v0.76.5 assets) and full patch tags (v0.77.2).
+# tags (v0.76 containing v0.76.5 assets) and full patch tags (v0.77.2), and
+# since v0.77.3 publishes most binaries gzipped (*.gz); both are accepted.
 # This workflow records each asset's exact API-provided URL, version, and
 # checksum so the image build does not have to infer the release layout.
 #
@@ -33,7 +34,7 @@ jobs:
       TRIAGE_REPO: Velocidex/velociraptor-triage-collector
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Order matters only for printing.
-      ASSET_KEYS: "LINUX_AMD64 LINUX_ARM64 DARWIN_AMD64 DARWIN_ARM64 WINDOWS_EXE WINDOWS_MSI"
+      ASSET_KEYS: "LINUX_AMD64 LINUX_ARM64 LINUX_AMD64_MUSL DARWIN_AMD64 DARWIN_ARM64 WINDOWS_EXE WINDOWS_MSI"
     steps:
       - uses: actions/checkout@v4
 
@@ -44,16 +45,20 @@ jobs:
           set -euo pipefail
 
           # Per-platform regex against an asset filename. Each pattern
-          # captures the patch version (with leading "v") as group 1.
-          # Note: legacy and -musl variants are intentionally excluded.
+          # captures the patch version (with leading "v") as group 1 and
+          # accepts an optional .gz suffix (v0.77.3+ ships gzipped binaries;
+          # the Dockerfile decompresses them). Windows -legacy and the
+          # -sumo-musl variants are intentionally excluded.
           platform_regex() {
+            local v='(v[0-9]+\.[0-9]+\.[0-9]+)'
             case "$1" in
-              LINUX_AMD64)  echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-linux-amd64$' ;;
-              LINUX_ARM64)  echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-linux-arm64$' ;;
-              DARWIN_AMD64) echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-darwin-amd64$' ;;
-              DARWIN_ARM64) echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-darwin-arm64$' ;;
-              WINDOWS_EXE)  echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-windows-amd64\.exe$' ;;
-              WINDOWS_MSI)  echo '^velociraptor-(v[0-9]+\.[0-9]+\.[0-9]+)-windows-amd64\.msi$' ;;
+              LINUX_AMD64)      echo "^velociraptor-${v}-linux-amd64(\\.gz)?\$" ;;
+              LINUX_ARM64)      echo "^velociraptor-${v}-linux-arm64(\\.gz)?\$" ;;
+              LINUX_AMD64_MUSL) echo "^velociraptor-${v}-linux-amd64-musl(\\.gz)?\$" ;;
+              DARWIN_AMD64)     echo "^velociraptor-${v}-darwin-amd64(\\.gz)?\$" ;;
+              DARWIN_ARM64)     echo "^velociraptor-${v}-darwin-arm64(\\.gz)?\$" ;;
+              WINDOWS_EXE)      echo "^velociraptor-${v}-windows-amd64\\.exe(\\.gz)?\$" ;;
+              WINDOWS_MSI)      echo "^velociraptor-${v}-windows-amd64\\.msi(\\.gz)?\$" ;;
             esac
           }
 
@@ -63,19 +68,21 @@ jobs:
             --jq '[.[] | select(.draft==false and .prerelease==false)] | sort_by(.published_at) | reverse' \
             > releases.json
 
-          # Flatten all assets across all those releases to "name<TAB>url".
-          jq -r '.[] | .assets[] | "\(.name)\t\(.browser_download_url)"' \
+          # Flatten all assets across all those releases to
+          # "name<TAB>url<TAB>digest" (digest is GitHub's "sha256:<hex>", may be empty).
+          jq -r '.[] | .assets[] | "\(.name)\t\(.browser_download_url)\t\(.digest // "")"' \
             releases.json > all-assets.tsv
 
-          declare -A VERSION URL SHA256
+          declare -A VERSION URL SHA256 DIGEST
 
           for key in $ASSET_KEYS; do
             re="$(platform_regex "$key")"
-            # Lines like "v0.76.5|<url>"
+            # Lines like "v0.76.5|<url>|<digest>". If a release carries both a
+            # raw and a .gz copy, sort order makes the choice deterministic.
             candidates="$(
-              while IFS=$'\t' read -r name url; do
+              while IFS=$'\t' read -r name url digest; do
                 if [[ "$name" =~ $re ]]; then
-                  printf '%s|%s\n' "${BASH_REMATCH[1]}" "$url"
+                  printf '%s|%s|%s\n' "${BASH_REMATCH[1]}" "$url" "$digest"
                 fi
               done < all-assets.tsv | sort -V -r
             )"
@@ -84,11 +91,11 @@ jobs:
               exit 1
             fi
             first="$(printf '%s\n' "$candidates" | head -n1)"
-            ver="${first%%|*}"
-            url="${first##*|}"
+            IFS='|' read -r ver url digest <<< "$first"
             VERSION[$key]="$ver"
             URL[$key]="$url"
-            echo "  $key -> $ver"
+            DIGEST[$key]="${digest#sha256:}"
+            echo "  $key -> $ver ($url)"
           done
 
           # Compute sha256s for each pinned asset (download to /tmp).
@@ -97,6 +104,11 @@ jobs:
             curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "${URL[$key]}"
             SHA256[$key]="$(sha256sum "$tmp" | awk '{print $1}')"
             rm -f "$tmp"
+            # Cross-check against the digest GitHub records for the asset.
+            if [ -n "${DIGEST[$key]}" ] && [ "${DIGEST[$key]}" != "${SHA256[$key]}" ]; then
+              echo "FATAL: $key download sha256 ${SHA256[$key]} != GitHub digest ${DIGEST[$key]}" >&2
+              exit 1
+            fi
           done
 
           # Pin generated Triage definitions to the immutable head commit of
@@ -120,6 +132,17 @@ jobs:
           NEW_VELOX_VERSION="$(printf '%s\n' "${VERSION[@]}" | sort -V -r | head -n1)"
           echo "new_velox_version=${NEW_VELOX_VERSION}"
           echo "new_velox_version=${NEW_VELOX_VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Surface any asset that is pinned behind the main version so a
+          # mixed-version image is obvious in the PR instead of silent.
+          LAGGING=""
+          for key in $ASSET_KEYS; do
+            if [ "${VERSION[$key]}" != "$NEW_VELOX_VERSION" ]; then
+              echo "::warning::$key pinned to ${VERSION[$key]} (main version ${NEW_VELOX_VERSION})"
+              LAGGING="${LAGGING}${key}=${VERSION[$key]} "
+            fi
+          done
+          echo "lagging_assets=${LAGGING% }" >> "$GITHUB_OUTPUT"
 
           mkdir -p .upstream-check
           {
@@ -149,7 +172,11 @@ jobs:
             echo "# does have it."
             echo "#"
             echo "# Format: <key>_VERSION=<patch-tag>, <key>_URL=<url>, <key>_SHA256=<hex>"
-            echo "# Keys: LINUX_AMD64, LINUX_ARM64, DARWIN_AMD64, DARWIN_ARM64, WINDOWS_EXE, WINDOWS_MSI"
+            echo "# URLs may end in .gz (v0.77.3+); SHA256 is of the downloaded file and the"
+            echo "# Dockerfile decompresses after verifying it."
+            echo "#"
+            echo "# Keys: LINUX_AMD64, LINUX_ARM64, LINUX_AMD64_MUSL, DARWIN_AMD64, DARWIN_ARM64,"
+            echo "#       WINDOWS_EXE, WINDOWS_MSI"
             echo ""
             for key in $ASSET_KEYS; do
               echo "${key}_VERSION=${VERSION[$key]}"
@@ -267,6 +294,7 @@ jobs:
 
             **Velociraptor version:** `${{ steps.decide.outputs.new_velox_version }}`
             **Image revision:** `${{ steps.decide.outputs.new_image_revision }}`
+            **Assets pinned behind the main version:** `${{ steps.resolve.outputs.lagging_assets || 'none' }}`
 
             When merged, tag this commit `${{ steps.decide.outputs.new_velox_version }}-${{ steps.decide.outputs.new_image_revision }}` (or `${{ steps.decide.outputs.new_velox_version }}` for the first revision) to trigger the publish workflow.
           delete-branch: true

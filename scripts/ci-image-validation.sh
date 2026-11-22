@@ -117,6 +117,23 @@ if [ ! -s "$CLIENT_BIN_HOST" ]; then
   exit 1
 fi
 
+echo "--- Verify repacked static musl client runs on a non-glibc host (Alpine) ---"
+MUSL_BIN_HOST="$WORKDIR/client_bundles/linux/velociraptor_client_amd64_musl_repacked"
+if [ ! -s "$MUSL_BIN_HOST" ]; then
+  echo "Repacked musl client binary not found at $MUSL_BIN_HOST"
+  ls -la "$WORKDIR/client_bundles/linux" || true
+  exit 1
+fi
+docker run --rm --platform linux/amd64 \
+  -v "$WORKDIR/client_bundles/linux:/client:ro" \
+  alpine:latest \
+  /client/velociraptor_client_amd64_musl_repacked version
+docker run --rm --platform linux/amd64 \
+  -v "$WORKDIR/client_bundles/linux:/client:ro" \
+  alpine:latest \
+  /client/velociraptor_client_amd64_musl_repacked config show >/dev/null
+echo "  musl client runs and carries an embedded config"
+
 echo "--- Start client ($CLIENT) ---"
 docker run -d --rm \
   --name "$CLIENT" \

@@ -11,7 +11,7 @@ services:
   velociraptor:
     # Pin to a specific image for reproducibility. Switch to `:latest`
     # if you'd rather always run the newest build.
-    image: docker.io/xboarder56/velociraptor:0.77.2
+    image: docker.io/xboarder56/velociraptor:0.77.3
     restart: unless-stopped
     stop_grace_period: 30s
 
@@ -25,8 +25,12 @@ services:
     ports:
       - "8000:8000"   # Client/Frontend ingest
       - "8889:8889"   # Admin GUI
-      - "8001:8001"   # gRPC API
-      - "8003:8003"   # Prometheus metrics
+      # The gRPC API and Prometheus metrics are bound to the host's loopback
+      # interface only. Metrics are unauthenticated and the API is an admin
+      # surface; remove `127.0.0.1:` only if you deliberately need remote
+      # access (e.g. a Prometheus server on another host) and firewall it.
+      - "127.0.0.1:8001:8001"   # gRPC API
+      - "127.0.0.1:8003:8003"   # Prometheus metrics
 
     # Optional: pull non-secret defaults from .env automatically. Compose
     # already does ${VAR} interpolation from .env without this; the

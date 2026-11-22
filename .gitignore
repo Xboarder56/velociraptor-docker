@@ -32,5 +32,4 @@ pki/
 *.crt
 
 # Ignore Docker Desktop’s extra metadata
-.dockerignore
 .docker/
