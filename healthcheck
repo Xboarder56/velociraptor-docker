@@ -1,0 +1,21 @@
+#!/bin/sh
+# Container healthcheck: probe the GUI listener the server was actually
+# started with. The entrypoint records the GUI bind port and scheme from the
+# effective config (any config mode) just before it starts the server.
+set -eu
+
+state=/run/velociraptor/health.env
+port=8889
+scheme=https
+if [ -r "$state" ]; then
+  # shellcheck disable=SC1090
+  . "$state"
+fi
+
+# Any HTTP response (307 redirect, 401, ...) means the GUI is serving.
+code="$(curl -ksS --max-time 8 -o /dev/null -w '%{http_code}' \
+  "${scheme}://127.0.0.1:${port}/" 2>/dev/null || true)"
+case "$code" in
+  ""|000) exit 1 ;;
+  *) exit 0 ;;
+esac
