@@ -16,8 +16,8 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
 
-    # tini as PID 1: reaps zombies and forwards signals to the server.
-    init: true
+    # The image runs tini as PID 1 (reaps helpers, forwards signals), so
+    # `init: true` is not needed.
     # The entrypoint starts as root only to prepare the volume, then runs the
     # server as an unprivileged user (VELOX_UID/VELOX_GID). Nothing in the
     # container needs to gain privileges after that.

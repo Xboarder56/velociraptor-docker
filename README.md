@@ -72,6 +72,8 @@ These **variables are read at container start**—no image rebuilds needed.
 | `VELOX_UID` / `VELOX_GID` | Account the server runs as (e.g. your host user's ids for bind mounts) | `10001` / `10001` |
 | `VELOX_RUN_AS_ROOT` | `true` keeps the server running as root (previous behavior) | `false` |
 | `VELOX_CERT_RENEW_DAYS` | Rotate the frontend certificate when it expires within this many days | `30` |
+| `VELOX_SERVER_PACKAGES` | Build the client MSI/deb/rpm as a server collection so they can be downloaded from the GUI; see [Client packages in the GUI](#client-packages-in-the-gui) | `true` |
+| `VELOX_SERVER_PACKAGE_ARTIFACTS` | Comma-separated server artifacts that build them | `Server.Utils.CreateMSI,Server.Utils.CreateLinuxPackages` |
 | **Logging** | | |
 | `VELOX_START_SERVER_VERBOSE` | `true` runs the server with `-v` (DEBUG logs); `false` for INFO | `true` |
 | `VELOX_LOG_DIR` | Component log directory | `./logs` (`/velociraptor/logs`) |
@@ -185,7 +187,7 @@ See [Managing artifacts](#managing-artifacts).
 
 ## Docker Compose
 
-The repository's [`docker-compose.yaml`](docker-compose.yaml) is the recommended starting point. It adds `init: true`, `no-new-privileges`, a minimal capability set, a pids limit, a memory limit (`VELOX_MEM_LIMIT`, default `4g`), and a commented Docker secrets example. A minimal version:
+The repository's [`docker-compose.yaml`](docker-compose.yaml) is the recommended starting point. It adds `no-new-privileges`, a minimal capability set, a pids limit, a memory limit (`VELOX_MEM_LIMIT`, default `4g`), and a commented Docker secrets example. A minimal version:
 
 ```yaml
 services:
@@ -229,6 +231,15 @@ After startup, check `./velodata/client_bundles/` for repacked binaries:
 - **Windows:** `.exe` and `.msi`
 
 If a specific upstream client binary isn’t available, the repack step is skipped (you’ll see a log message).
+
+### Client packages in the GUI
+
+The files above live on disk. The same installers are also built inside Velociraptor, which makes them downloadable from the GUI (**Server Artifacts** → the `Server.Utils.CreateMSI, Server.Utils.CreateLinuxPackages` collection → **Uploaded Files**) and lets client-upgrade hunts use them. Velocidex's official image does this with `Frontend.initial_server_artifacts`, which only ever runs on a brand-new datastore. Here it runs whenever it's needed:
+
+- **When it runs:** a background helper starts the collection once the server is up, on the first start and again whenever the client config (for example the server URL), the bundled binaries (an upgrade) or `VELOX_SERVER_PACKAGE_ARTIFACTS` change. Otherwise the banner shows `GUI Client Packages: up to date` and nothing runs. If a collection fails, it's retried on the next start.
+- **Internet access:** `Server.Utils.CreateMSI` fetches the MSI from GitHub, so it needs outbound HTTPS. Without it, the collection fails and is retried on the next start; the on-disk bundles are unaffected.
+- **API identity:** the helper uses a dedicated local API identity, `velox-maintenance` (roles `administrator,api`), whose key is kept in `/velociraptor/.velox/` (mode `0600`). It connects only to `127.0.0.1`.
+- **Turning it off:** set `VELOX_SERVER_PACKAGES=false`. The helper then never starts. The `velox-maintenance` user remains if it was created; remove it in the GUI if you like.
 
 ---
 

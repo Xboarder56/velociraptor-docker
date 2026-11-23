@@ -75,9 +75,18 @@ host_read() {
   docker run --rm --entrypoint cat -v "$(dirname "$1"):/d:ro" "$IMAGE" "/d/$(basename "$1")"
 }
 
+# PID of the Velociraptor server process (tini is PID 1).
+server_pid() {
+  docker exec "$1" sh -c 'for p in /proc/[0-9]*; do
+    case "$(tr "\000" " " < "$p/cmdline" 2>/dev/null)" in
+      */velociraptor*" frontend"*) echo "${p#/proc/}"; exit 0 ;;
+    esac
+  done; exit 1'
+}
+
 assert_private_config() {
   local container="$1" mode uid
-  uid="$(docker exec "$container" awk '/^Uid:/ {print $2}' /proc/1/status)"
+  uid="$(docker exec "$container" awk '/^Uid:/ {print $2}' "/proc/$(server_pid "$container")/status")"
   [ "$uid" = 10001 ] || fail "$container: server runs as uid $uid, expected 10001"
   mode="$(docker exec "$container" stat -c '%a %u' /velociraptor/server.config.yaml)"
   [ "$mode" = "600 10001" ] || fail "$container: server.config.yaml is '$mode', expected '600 10001'"
@@ -112,9 +121,12 @@ start_server_with_image() {
 
   mkdir -p "$data_dir"
   ACTIVE_CONTAINERS+=("$container")
+  # GUI client packages are covered by ci-image-validation.sh; skip them here
+  # so the many short-lived servers don't each fetch the MSI.
   docker run -d \
     --name "$container" \
     -v "$data_dir:/velociraptor" \
+    -e VELOX_SERVER_PACKAGES=false \
     "$@" \
     "$image" >/dev/null
   wait_ready "$container"
@@ -315,7 +327,7 @@ inspect_output="$(docker inspect "$SECRET_CONTAINER")"
 log_output="$(docker logs "$SECRET_CONTAINER" 2>&1)"
 [[ "$log_output" != *"$SECRET_VALUE"* ]] || fail 'secret value appeared in container logs'
 # The server runs as uid 10001; read its environment as that user.
-pid1_environment="$(docker exec -u 10001:10001 "$SECRET_CONTAINER" sh -c "tr '\000' '\n' < /proc/1/environ")"
+pid1_environment="$(docker exec -u 10001:10001 "$SECRET_CONTAINER" sh -c "tr '\000' '\n' < /proc/$(server_pid "$SECRET_CONTAINER")/environ")"
 [[ "$pid1_environment" != *"$SECRET_VALUE"* ]] || fail 'secret value remained in the server process environment'
 stop_server "$SECRET_CONTAINER"
 
