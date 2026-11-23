@@ -222,8 +222,11 @@ COPY --from=sigma /out/ /opt/velociraptor/artifacts/
 #   * v0.77.3 requires artifacts calling tempfile() to declare FILESYSTEM_WRITE;
 #     the Triage definitions do not yet (they load and run fine).
 #   * `verify` cannot lex the 1.1 MB base64 rules literal embedded in
-#     Windows.Hayabusa.Rules; the server parses and runs it fine (the CI
-#     smoke test checks the server loads it).
+#     Windows.Hayabusa.Rules (v0.77.4 also reports it as two yaml_error
+#     lines); the server parses and runs it fine (the CI smoke test checks
+#     the server loads it).
+#   * v0.77.4 requires the Sigma base artifacts to declare SERVER_ADMIN; the
+#     pinned Sigma pack predates that lint (they load and run fine).
 RUN set -eux; \
   fetch_definition() { \
     local url="$1" out="$2" expect_sha="$3" actual_sha; \
@@ -255,6 +258,8 @@ RUN set -eux; \
     if grep -E '^ERROR: ' /tmp/verify.log \
         | grep -v -E "^ERROR: (Linux\.Triage\.UAC|Windows\.Triage\.Targets): \(0,0\) required_permissions: Add FILESYSTEM_WRITE to artifact's required_permissions or implied_permissions fields$" \
         | grep -v -E '^ERROR: artifact_set: While parsing source query : de\(string=\|"H4sI[A-Za-z0-9+/]*: 1:[0-9]+: lexer: invalid input text "\\"H4sI[A-Za-z0-9+/]*\.\.\.": name: Windows\.Hayabusa\.Rules$' \
+        | grep -v -E '^ERROR: \(0,0\) yaml_error: YAML Error: While parsing (artifact export|source query) ?: de\(string=\|"H4sI[A-Za-z0-9+/]*: 1:[0-9]+: lexer: invalid input text "\\"H4sI[A-Za-z0-9+/]*\.\.\."$' \
+        | grep -v -E "^ERROR: (Linux\.Sigma\.Base|MacOS\.Sigma\.BaseVQL|Windows\.Sigma\.Base|Windows\.Sigma\.BaseEvents|Windows\.Sigma\.BaseVQL): \(0,0\) required_permissions: Add SERVER_ADMIN to artifact's required_permissions or implied_permissions fields$" \
         | grep -q .; then \
       echo "FATAL: bundled artifact verification failed" >&2; \
       exit 1; \
@@ -263,7 +268,7 @@ RUN set -eux; \
       echo "FATAL: artifact verification failed without reporting errors" >&2; \
       exit 1; \
     fi; \
-    echo "WARNING: tolerated known upstream lint issues (Triage FILESYSTEM_WRITE, Hayabusa rules literal)"; \
+    echo "WARNING: tolerated known upstream lint issues (Triage FILESYSTEM_WRITE, Sigma SERVER_ADMIN, Hayabusa rules literal)"; \
   fi; \
   rm -f /tmp/verify.log
 
