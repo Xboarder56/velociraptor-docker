@@ -16,24 +16,24 @@
 # Keys: LINUX_AMD64, LINUX_ARM64, LINUX_AMD64_MUSL, DARWIN_AMD64, DARWIN_ARM64,
 #       WINDOWS_EXE, WINDOWS_MSI
 
-LINUX_AMD64_VERSION=v0.77.3
-LINUX_AMD64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.3/velociraptor-v0.77.3-linux-amd64.gz
-LINUX_AMD64_SHA256=c2c4eb585f16b622cd57de04995a7a13c076ee455bc2a828fd9243cec2ccfed8
-LINUX_ARM64_VERSION=v0.77.3
-LINUX_ARM64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.3/velociraptor-v0.77.3-linux-arm64.gz
-LINUX_ARM64_SHA256=f28e097c98bee125bf65adfe64937c9699b4d77742b7ab12f186a065298e72c3
-LINUX_AMD64_MUSL_VERSION=v0.77.3
-LINUX_AMD64_MUSL_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.3/velociraptor-v0.77.3-linux-amd64-musl.gz
-LINUX_AMD64_MUSL_SHA256=b4699d7ecfd5c0d656d86379e41f0eb34b0f12c3cb45398f1e747f10844d7930
-DARWIN_AMD64_VERSION=v0.77.3
-DARWIN_AMD64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.3/velociraptor-v0.77.3-darwin-amd64.gz
-DARWIN_AMD64_SHA256=47ef3c58d51a03f49cdf7ee62996a3ad5d7230558fdb64e670e45fc41485dd71
-DARWIN_ARM64_VERSION=v0.77.3
-DARWIN_ARM64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.3/velociraptor-v0.77.3-darwin-arm64.gz
-DARWIN_ARM64_SHA256=ecbb8b873ceee7cf3809643047d828ffecc9269906788b0ea02027eb2f8e0e0d
-WINDOWS_EXE_VERSION=v0.77.3
-WINDOWS_EXE_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.3/velociraptor-v0.77.3-windows-amd64.exe.gz
-WINDOWS_EXE_SHA256=0b9cd957e5605da74994a6c29934da9af0e3af9c9b808f2274c826fba32dc3ae
-WINDOWS_MSI_VERSION=v0.77.3
-WINDOWS_MSI_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.3/velociraptor-v0.77.3-windows-amd64.msi
-WINDOWS_MSI_SHA256=097dbfa7b0c15d90c051b4f58852cfbe427130d5a8387210833ccaaf86652ddc
+LINUX_AMD64_VERSION=v0.77.4
+LINUX_AMD64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.4/velociraptor-v0.77.4-linux-amd64.gz
+LINUX_AMD64_SHA256=890c1b8458276909cfbbfb2edad2e0b9c31672b95532e41516c39d2537925157
+LINUX_ARM64_VERSION=v0.77.4
+LINUX_ARM64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.4/velociraptor-v0.77.4-linux-arm64.gz
+LINUX_ARM64_SHA256=908eda7aaaf46f4a988b282cabbe7844c273ad185d5c9846aa33518ff5e2708c
+LINUX_AMD64_MUSL_VERSION=v0.77.4
+LINUX_AMD64_MUSL_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.4/velociraptor-v0.77.4-linux-amd64-musl.gz
+LINUX_AMD64_MUSL_SHA256=dc093453cd9e2da8778fed58f165fdc040f9484fd199814b6ddb0fc29b665b10
+DARWIN_AMD64_VERSION=v0.77.4
+DARWIN_AMD64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.4/velociraptor-v0.77.4-darwin-amd64.gz
+DARWIN_AMD64_SHA256=551251457f9f499998636828cba4fc152296cb2360063a99df1bbd8d5dc55161
+DARWIN_ARM64_VERSION=v0.77.4
+DARWIN_ARM64_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.4/velociraptor-v0.77.4-darwin-arm64.gz
+DARWIN_ARM64_SHA256=a8943c78b10dde9edeba1810038816e89fd5626bae4e5f5fe88a045b9fbf06fa
+WINDOWS_EXE_VERSION=v0.77.4
+WINDOWS_EXE_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.4/velociraptor-v0.77.4-windows-amd64.exe.gz
+WINDOWS_EXE_SHA256=e90820fc0a129bb76e9990560d8620d4a3b7759a902e473c9887e8bcbe128512
+WINDOWS_MSI_VERSION=v0.77.4
+WINDOWS_MSI_URL=https://github.com/Velocidex/velociraptor/releases/download/v0.77.4/velociraptor-v0.77.4-windows-amd64.msi
+WINDOWS_MSI_SHA256=c8d5705157a752c9b9ed8bf08769a30030e30766b998cedb7436a2be2b5bf76f
