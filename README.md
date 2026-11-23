@@ -372,6 +372,7 @@ podman run -d --name velociraptor \
   - A separate job runs `ci-image-validation.sh` under rootless Podman.
   - Publishing (a `v*` tag, or a manual run with `dry_run` unchecked on `main` or a tag) pushes each architecture by digest, validates that pushed image, and only then creates the multi-arch tags.
 - **`release-tag.yml`** runs when `versions.env` changes on `main`: it tags the merge commit (`v<version>`, or `v<version>-<revision>` for revisions after the first) and starts the release build. Merging a bump PR, or a PR that raises `IMAGE_REVISION`, is all it takes to publish.
+- **`dockerhub-description.yml`** publishes `DOCKERHUB.md`, a short page linking here, as the Docker Hub description whenever it changes on `main`. This README is longer than Docker Hub's 25,000-byte limit.
 - Dependabot keeps the SHA-pinned actions and the digest-pinned base image current.
 
 Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
