@@ -240,6 +240,45 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # The same end-to-end validation under rootless Podman (the runner's
+  # preinstalled podman, with `docker` pointed at it).
+  podman:
+    needs: prepare
+    if: needs.prepare.outputs.publish != 'true'
+    runs-on: ubuntu-24.04
+    name: Validate under rootless Podman (amd64)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: velociraptor:smoke
+          build-args: ${{ needs.prepare.outputs.build_args }}
+          cache-from: type=gha,scope=velociraptor-amd64
+
+      - name: Hand the image to rootless Podman
+        run: |
+          set -euo pipefail
+          podman --version
+          docker save velociraptor:smoke | podman load
+          mkdir -p "$RUNNER_TEMP/podman-bin"
+          ln -s "$(command -v podman)" "$RUNNER_TEMP/podman-bin/docker"
+          echo "$RUNNER_TEMP/podman-bin" >> "$GITHUB_PATH"
+
+      - name: Validate image under Podman
+        env:
+          IMAGE: localhost/velociraptor:smoke
+          CLIENT_ARCH: amd64
+        run: |
+          docker --version
+          ./scripts/ci-image-validation.sh
+
   publish:
     needs: [prepare, build]
     if: needs.prepare.outputs.publish == 'true'

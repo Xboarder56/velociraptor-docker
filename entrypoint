@@ -684,21 +684,26 @@ fi
 # Client bundles are meant to be copied out and distributed.
 chmod -R a+rX "$CLIENT_DIR"
 
-# Bundled definitions plus any operator-supplied ones (*.yaml/*.yml in
-# VELOX_EXTRA_ARTIFACTS_DIR, default /velociraptor/artifacts). The server
-# accepts a single --definitions directory, so both are merged here.
+# Artifact definitions the server loads (--definitions accepts a single
+# directory): the bundled ones, *.yaml/*.yml from VELOX_EXTRA_ARTIFACTS_DIR,
+# and those declared in VELOX_ARTIFACTS_MANIFEST, minus anything disabled.
+# Rebuilt on every start, so removing a file or manifest entry removes the
+# artifact. See artifacts-sync for the manifest format.
 DEFINITIONS_DIR="$RUNTIME_DIR/definitions"
-rm -rf "$DEFINITIONS_DIR"
-mkdir -p "$DEFINITIONS_DIR/bundled"
-cp -p "$ARTIFACT_DEFINITIONS_DIR"/*.yaml "$DEFINITIONS_DIR/bundled/"
-extra_count=0
-if [ -d "$EXTRA_ARTIFACTS_DIR" ]; then
-  mkdir -p "$DEFINITIONS_DIR/extra"
-  while IFS= read -r -d '' f; do
-    cp -p "$f" "$DEFINITIONS_DIR/extra/"
-    extra_count=$((extra_count + 1))
-  done < <(find "$EXTRA_ARTIFACTS_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) -print0)
-fi
+ARTIFACTS_MANIFEST="${VELOX_ARTIFACTS_MANIFEST:-/velociraptor/artifacts.yaml}"
+case "${VELOX_ARTIFACTS_STRICT:-true}" in
+  true|TRUE|True|false|FALSE|False) ;;
+  *) echo "FATAL: VELOX_ARTIFACTS_STRICT must be 'true' or 'false', got: '${VELOX_ARTIFACTS_STRICT}'" >&2; exit 1 ;;
+esac
+artifact_summary="$(/usr/local/bin/velox-artifacts-sync \
+  --bundled "$ARTIFACT_DEFINITIONS_DIR" \
+  --extra "$EXTRA_ARTIFACTS_DIR" \
+  --manifest "$ARTIFACTS_MANIFEST" \
+  --disable "${VELOX_DISABLE_ARTIFACTS:-}" \
+  --cache /velociraptor/.artifact-cache \
+  --out "$DEFINITIONS_DIR" \
+  --strict "${VELOX_ARTIFACTS_STRICT:-true}")"
+printf '%s\n' "$artifact_summary"
 chmod -R a+rX "$DEFINITIONS_DIR"
 
 # Start Velociraptor Server
@@ -718,7 +723,11 @@ echo " Client Dir:                 ${CLIENT_DIR}"
 echo " DataStore Dir:              ${DATASTORE_LOCATION}"
 echo " FileStore Dir:              ${FILESTORE_DIRECTORY}"
 echo " Bundled Artifact Dir:       ${ARTIFACT_DEFINITIONS_DIR}"
-echo " Extra Artifacts:            ${extra_count} from ${EXTRA_ARTIFACTS_DIR}"
+echo " Artifacts:                  $(printf '%s\n' "$artifact_summary" | sed -n 's/^\[artifacts\] loaded: //p')"
+echo " Extra Artifacts Dir:        ${EXTRA_ARTIFACTS_DIR}"
+if [ -f "$ARTIFACTS_MANIFEST" ]; then
+  echo " Artifacts Manifest:         ${ARTIFACTS_MANIFEST}"
+fi
 if [ "$VELOX_RUN_AS_ROOT" = "true" ]; then
   echo " Server Runs As:             root (VELOX_RUN_AS_ROOT=true)"
 else

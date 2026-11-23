@@ -3,4 +3,5 @@
 *
 !entrypoint
 !healthcheck
+!artifacts-sync
 !keys/velocidex-release.gpg

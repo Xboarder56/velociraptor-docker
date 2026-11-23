@@ -461,4 +461,103 @@ assert_config_value "$PROXY_CONTAINER" /velociraptor/server.config.yaml '.GUI.pu
 assert_gui_api "$PROXY_CONTAINER" admin proxy-password
 stop_server "$PROXY_CONTAINER"
 
+echo "--- Declarative artifacts: manifest installs, disables, overrides and removes ---"
+MF_NET="velo-mf-$SUFFIX"
+MF_WEB="velo-mf-web-$SUFFIX"
+MF_DATA="$TEST_ROOT/manifest-data"
+MF_WWW="$TEST_ROOT/manifest-www"
+MF_CONTAINER="velo-config-manifest-$SUFFIX"
+MF_PASSWORD="manifest-password"
+mkdir -p "$MF_WWW/pack" "$MF_DATA/artifacts"
+chmod 0755 "$MF_WWW" "$MF_WWW/pack" "$MF_DATA" "$MF_DATA/artifacts"
+printf 'name: Custom.Url.Single\nsources:\n  - query: SELECT 1 AS One FROM scope()\n' > "$MF_WWW/single.yaml"
+printf 'name: Custom.Zip.Keep\nsources:\n  - query: SELECT 2 AS Two FROM scope()\n' > "$MF_WWW/pack/keep.yaml"
+printf 'name: Custom.Zip.Skip\nsources:\n  - query: SELECT 3 AS Three FROM scope()\n' > "$MF_WWW/pack/skip.yaml"
+printf 'title: a detection rule, not an artifact\n' > "$MF_WWW/pack/rule.yml"
+chmod 0644 "$MF_WWW"/*.yaml "$MF_WWW"/pack/*
+docker run --rm --entrypoint python3 -v "$MF_WWW:/www" -w /www "$IMAGE" -c '
+import zipfile
+with zipfile.ZipFile("pack.zip", "w") as z:
+    for f in ("keep.yaml", "skip.yaml", "rule.yml"):
+        z.write("pack/" + f, f)'
+single_sha="$(sha256sum "$MF_WWW/single.yaml" | awk '{print $1}')"
+pack_sha="$(host_read "$MF_WWW/pack.zip" | sha256sum | awk '{print $1}')"
+printf 'name: Windows.Sigma.Triage\ndescription: operator override\nsources:\n  - query: SELECT 9 AS Nine FROM scope()\n' > "$MF_DATA/artifacts/override.yaml"
+{
+  echo "artifacts:"
+  echo "  - url: http://web:8080/single.yaml"
+  echo "    sha256: ${single_sha}"
+  echo "  - url: http://web:8080/pack.zip"
+  echo "    sha256: ${pack_sha}"
+  echo "    include: [Custom.Zip.Keep]"
+  echo "disable:"
+  echo "  - Windows.Hayabusa.Monitoring"
+} > "$MF_DATA/artifacts.yaml"
+chmod 0644 "$MF_DATA/artifacts.yaml" "$MF_DATA/artifacts/override.yaml"
+docker network create "$MF_NET" >/dev/null
+ACTIVE_NETWORKS+=("$MF_NET")
+ACTIVE_CONTAINERS+=("$MF_WEB")
+docker run -d --name "$MF_WEB" --network "$MF_NET" --network-alias web \
+  -v "$MF_WWW:/www:ro" -w /www --entrypoint python3 "$IMAGE" -m http.server 8080 >/dev/null
+
+# artifact_state CONTAINER NAME -> loaded | absent (as the running server sees it)
+artifact_state() {
+  local body
+  body="$(docker exec "$1" curl -ksS --max-time 10 -u "admin:$MF_PASSWORD" \
+    "https://127.0.0.1:8889/api/v1/GetArtifactFile?name=$2" | jq -r '.artifact // empty' | head -n1)"
+  case "$body" in
+    "name: Custom.$2"|"name: $2") echo loaded ;;
+    *) echo absent ;;
+  esac
+}
+expect_artifact() {
+  local state
+  state="$(artifact_state "$1" "$2")"
+  [ "$state" = "$3" ] || fail "$1: expected $2 to be $3, got $state"
+}
+
+start_server "$MF_CONTAINER" "$MF_DATA" --network "$MF_NET" \
+  -e VELOX_DEFAULT_PASSWORD="$MF_PASSWORD" -e VELOX_START_SERVER_VERBOSE=false
+expect_artifact "$MF_CONTAINER" Custom.Url.Single loaded
+expect_artifact "$MF_CONTAINER" Custom.Zip.Keep loaded
+expect_artifact "$MF_CONTAINER" Custom.Zip.Skip absent
+expect_artifact "$MF_CONTAINER" Windows.Hayabusa.Monitoring absent
+expect_artifact "$MF_CONTAINER" Windows.Hayabusa.Rules loaded
+override="$(docker exec "$MF_CONTAINER" curl -ksS -u "admin:$MF_PASSWORD" \
+  'https://127.0.0.1:8889/api/v1/GetArtifactFile?name=Windows.Sigma.Triage' | jq -r .artifact)"
+[[ "$override" == *"operator override"* ]] || fail 'extra-directory artifact did not replace the bundled one'
+assert_log_contains "$MF_CONTAINER" '[artifacts] loaded: 10 bundled, 1 extra, 2 manifest'
+stop_server "$MF_CONTAINER"
+
+# Remove one entry and take the web server away: the other comes from cache.
+docker rm -f "$MF_WEB" >/dev/null
+docker run --rm --entrypoint sh -v "$MF_DATA:/velociraptor" "$IMAGE" \
+  -c "sed -i '/single.yaml/,+1d' /velociraptor/artifacts.yaml"
+MF_RESTART="velo-config-manifest-restart-$SUFFIX"
+start_server "$MF_RESTART" "$MF_DATA" --network "$MF_NET" \
+  -e VELOX_START_SERVER_VERBOSE=false -e VELOX_DISABLE_ARTIFACTS=Windows.Hayabusa.Rules
+expect_artifact "$MF_RESTART" Custom.Url.Single absent
+expect_artifact "$MF_RESTART" Custom.Zip.Keep loaded
+expect_artifact "$MF_RESTART" Windows.Hayabusa.Rules absent
+assert_log_contains "$MF_RESTART" '[artifacts] cached http://web:8080/pack.zip'
+stop_server "$MF_RESTART"
+
+# A wrong checksum stops the start (strict default) and is skipped when not strict.
+zero_sha="$(printf '%064d' 0)"
+docker run --rm --entrypoint sh -v "$MF_DATA:/velociraptor" "$IMAGE" \
+  -c "sed -i 's/${pack_sha}/${zero_sha}/' /velociraptor/artifacts.yaml"
+if docker run --rm --network "$MF_NET" -v "$MF_DATA:/velociraptor" "$IMAGE" \
+    >"$TEST_ROOT/manifest-strict.log" 2>&1; then
+  fail 'a manifest entry with a wrong checksum did not stop the start'
+fi
+grep -q 'FATAL: manifest' "$TEST_ROOT/manifest-strict.log" || fail 'strict manifest failure was not reported'
+MF_LENIENT="velo-config-manifest-lenient-$SUFFIX"
+start_server "$MF_LENIENT" "$MF_DATA" --network "$MF_NET" \
+  -e VELOX_ARTIFACTS_STRICT=false -e VELOX_START_SERVER_VERBOSE=false
+# Only the failing entry is skipped; the manifest's disable list still applies.
+expect_artifact "$MF_LENIENT" Custom.Zip.Keep absent
+expect_artifact "$MF_LENIENT" Windows.Hayabusa.Monitoring absent
+assert_log_contains "$MF_LENIENT" 'WARNING: skipping manifest entry
+stop_server "$MF_LENIENT"
+
 echo "Config mode and secret-file validation: PASS"

@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""Build the artifact definitions directory the server loads (--definitions).
+
+Sources, lowest to highest precedence (a later source replaces an artifact of
+the same name from an earlier one):
+  1. bundled   - definitions baked into the image
+  2. extra     - *.yaml / *.yml dropped into VELOX_EXTRA_ARTIFACTS_DIR
+  3. manifest  - definitions declared in VELOX_ARTIFACTS_MANIFEST, downloaded
+                 and verified by SHA-256 (cached, so restarts work offline)
+Then every name listed under `disable:` (or in VELOX_DISABLE_ARTIFACTS) is
+removed, whatever its source. The directory is rebuilt from scratch on every
+start, so deleting a manifest entry or a file removes that artifact.
+
+Manifest (YAML):
+  artifacts:
+    - url: https://example.com/Custom.Windows.Foo.yaml
+      sha256: <hex of the downloaded file>
+    - url: https://example.com/pack.zip           # a zip of definitions
+      sha256: <hex of the zip>
+      include: [Custom.Linux.Bar]                 # optional: artifact names to take
+  disable:
+    - Windows.Hayabusa.Monitoring
+"""
+import argparse
+import hashlib
+import io
+import os
+import re
+import shutil
+import sys
+import tempfile
+import urllib.request
+import zipfile
+
+import yaml
+
+LOG = "[artifacts]"
+
+
+class ManifestError(Exception):
+    pass
+
+
+def log(msg):
+    print(f"{LOG} {msg}", flush=True)
+
+
+def artifact_name(text, origin):
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ManifestError(f"{origin}: not valid YAML ({exc.__class__.__name__})")
+    if not isinstance(doc, dict) or not isinstance(doc.get("name"), str) or not doc["name"].strip():
+        raise ManifestError(f"{origin}: not an artifact definition (no `name:`)")
+    name = doc["name"].strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]+", name):
+        raise ManifestError(f"{origin}: unsupported artifact name {name!r}")
+    return name
+
+
+def read_dir(path, label):
+    found = []
+    if not path or not os.path.isdir(path):
+        return found
+    for entry in sorted(os.listdir(path)):
+        full = os.path.join(path, entry)
+        if entry.startswith(".") or not os.path.isfile(full):
+            continue
+        if not entry.endswith((".yaml", ".yml")):
+            continue
+        with open(full, "rb") as fh:
+            data = fh.read()
+        found.append((label, full, data))
+    return found
+
+
+def fetch(url, sha256, cache_dir):
+    """Return the verified bytes for url, from cache or downloaded."""
+    sha256 = sha256.lower()
+    cached = os.path.join(cache_dir, sha256)
+    if os.path.isfile(cached):
+        with open(cached, "rb") as fh:
+            data = fh.read()
+        if hashlib.sha256(data).hexdigest() == sha256:
+            return data, "cached"
+    if not url.startswith("https://") and not url.startswith("http://"):
+        raise ManifestError(f"{url}: only http(s) URLs are supported")
+    req = urllib.request.Request(url, headers={"User-Agent": "velociraptor-docker-artifacts"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+    except Exception as exc:  # noqa: BLE001 - report any transport error the same way
+        raise ManifestError(f"{url}: download failed ({exc})")
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != sha256:
+        raise ManifestError(f"{url}: sha256 mismatch (expected {sha256}, got {actual})")
+    os.makedirs(cache_dir, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=cache_dir)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, cached)
+    return data, "downloaded"
+
+
+def manifest_entries(manifest, cache_dir, strict):
+    """Return (label, origin, bytes) for each declared definition. With
+    strict off, an entry that fails (download, checksum, content) is skipped
+    with a warning and the others are still used."""
+    items = manifest.get("artifacts") or []
+    if not isinstance(items, list):
+        raise ManifestError("`artifacts:` must be a list")
+    found = []
+    for index, item in enumerate(items, 1):
+        try:
+            found.extend(manifest_entry(index, item, cache_dir))
+        except ManifestError as exc:
+            if strict:
+                raise
+            log(f"WARNING: skipping manifest entry: {exc} (VELOX_ARTIFACTS_STRICT=false)")
+    return found
+
+
+def manifest_entry(index, item, cache_dir):
+    entries = []
+    if not isinstance(item, dict):
+        raise ManifestError(f"artifacts[{index}]: expected a mapping with url and sha256")
+    url = item.get("url")
+    sha = item.get("sha256")
+    if not isinstance(url, str) or not url:
+        raise ManifestError(f"artifacts[{index}]: `url` is required")
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha):
+        raise ManifestError(f"artifacts[{index}] ({url}): `sha256` (64 hex characters) is required")
+    include = item.get("include")
+    if include is not None and (not isinstance(include, list) or not all(isinstance(i, str) for i in include)):
+        raise ManifestError(f"artifacts[{index}] ({url}): `include` must be a list of artifact names")
+    data, how = fetch(url, sha, cache_dir)
+    log(f"{how} {url}")
+    if url.split("?", 1)[0].endswith(".zip") or data[:4] == b"PK\x03\x04":
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile:
+            raise ManifestError(f"{url}: not a valid zip file")
+        members = [m for m in archive.namelist() if m.endswith((".yaml", ".yml")) and not m.endswith("/")]
+        wanted = set(include or [])
+        taken = set()
+        for member in members:
+            text = archive.read(member)
+            try:
+                name = artifact_name(text, f"{url}!{member}")
+            except ManifestError:
+                continue  # packs also carry non-artifact YAML (rules, configs)
+            if wanted and name not in wanted:
+                continue
+            taken.add(name)
+            entries.append(("manifest", f"{url}!{member}", text))
+        if not taken:
+            raise ManifestError(f"{url}: the zip contains no artifact definitions")
+        missing = wanted - taken
+        if missing:
+            raise ManifestError(f"{url}: no artifact named {', '.join(sorted(missing))} in the zip")
+    else:
+        if include:
+            raise ManifestError(f"{url}: `include` only applies to zip files")
+        artifact_name(data, url)
+        entries.append(("manifest", url, data))
+    return entries
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bundled", required=True)
+    ap.add_argument("--extra", default="")
+    ap.add_argument("--manifest", default="")
+    ap.add_argument("--disable", default="", help="comma/space separated artifact names")
+    ap.add_argument("--cache", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--strict", default="true")
+    args = ap.parse_args()
+    strict = args.strict.lower() != "false"
+
+    selected = {}  # name -> (label, origin, bytes)
+    replaced = []
+
+    def add(label, origin, data):
+        name = artifact_name(data, origin)
+        if name in selected and selected[name][0] != label:
+            replaced.append(f"{name} ({selected[name][0]} -> {label})")
+        selected[name] = (label, origin, data)
+
+    for label, origin, data in read_dir(args.bundled, "bundled"):
+        add(label, origin, data)
+
+    for label, origin, data in read_dir(args.extra, "extra"):
+        try:
+            add(label, origin, data)
+        except ManifestError as exc:
+            log(f"WARNING: skipping {exc}")
+
+    disable = set(n for n in re.split(r"[,\s]+", args.disable) if n)
+    if args.manifest and os.path.isfile(args.manifest):
+        try:
+            with open(args.manifest, "rb") as fh:
+                manifest = yaml.safe_load(fh) or {}
+            if not isinstance(manifest, dict):
+                raise ManifestError("the manifest must be a mapping with `artifacts:` and/or `disable:`")
+            unknown = set(manifest) - {"artifacts", "disable"}
+            if unknown:
+                raise ManifestError(f"unknown manifest keys: {', '.join(sorted(unknown))}")
+            listed = manifest.get("disable") or []
+            if not isinstance(listed, list) or not all(isinstance(n, str) for n in listed):
+                raise ManifestError("`disable:` must be a list of artifact names")
+            disable.update(listed)
+            for label, origin, data in manifest_entries(manifest, args.cache, strict):
+                add(label, origin, data)
+        except (ManifestError, yaml.YAMLError) as exc:
+            msg = f"manifest {args.manifest}: {exc}"
+            if strict:
+                print(f"FATAL: {msg}", file=sys.stderr)
+                print("FATAL: fix the manifest, or set VELOX_ARTIFACTS_STRICT=false to start without it.", file=sys.stderr)
+                return 1
+            log(f"WARNING: {msg} (VELOX_ARTIFACTS_STRICT=false: continuing without the manifest)")
+
+    removed = sorted(n for n in disable if n in selected)
+    unknown_disabled = sorted(n for n in disable if n not in selected)
+    for name in removed:
+        del selected[name]
+
+    shutil.rmtree(args.out, ignore_errors=True)
+    os.makedirs(args.out)
+    for name, (_, _, data) in sorted(selected.items()):
+        with open(os.path.join(args.out, f"{name}.yaml"), "wb") as fh:
+            fh.write(data)
+
+    counts = {}
+    for label, _, _ in selected.values():
+        counts[label] = counts.get(label, 0) + 1
+    log("loaded: " + ", ".join(f"{counts.get(k, 0)} {k}" for k in ("bundled", "extra", "manifest")))
+    for item in replaced:
+        log(f"replaced {item}")
+    if removed:
+        log("disabled: " + ", ".join(removed))
+    for name in unknown_disabled:
+        log(f"WARNING: cannot disable {name}: no such artifact (built-in artifacts can't be disabled here)")
+    custom = sorted(n for n, (label, _, _) in selected.items() if label != "bundled")
+    if custom:
+        log("custom: " + ", ".join(custom))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

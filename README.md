@@ -28,7 +28,7 @@ docker run -it --rm \
 
 Open [**https://localhost:8889**](https://localhost:8889) (accept the self-signed cert) and log in with the bootstrap credentials below (you should change them right away).
 
-The same command works with Podman by replacing `docker` with `podman`. The fully qualified `docker.io/...` image name avoids short-name registry ambiguity. On SELinux-enforcing hosts, label a bind mount for the container by using `-v "$PWD/velodata:/velociraptor:Z"`.
+The same command works with Podman by replacing `docker` with `podman`; see [Podman](#podman) for the healthcheck flag and rootless notes. The fully qualified `docker.io/...` image name avoids short-name registry ambiguity. On SELinux-enforcing hosts, label a bind mount for the container by using `-v "$PWD/velodata:/velociraptor:Z"`.
 
 ---
 
@@ -49,6 +49,9 @@ These **variables are read at container start**—no image rebuilds needed.
 | `VELOX_FILESTORE_DIRECTORY` | Root of the filestore (collections, uploads); first run only | `./filestore` (`/velociraptor/filestore`) |
 | `VELOX_CLIENT_DIR` | Where repacked clients are written | `/velociraptor/client_bundles` |
 | `VELOX_EXTRA_ARTIFACTS_DIR` | Extra artifact definitions (`*.yaml`/`*.yml`) loaded with the bundled ones | `/velociraptor/artifacts` |
+| `VELOX_ARTIFACTS_MANIFEST` | Declarative list of artifacts to install (by URL + SHA-256) and to disable; see [Managing artifacts](#managing-artifacts) | `/velociraptor/artifacts.yaml` |
+| `VELOX_DISABLE_ARTIFACTS` | Comma/space-separated artifact names not to load (bundled or custom) | unset |
+| `VELOX_ARTIFACTS_STRICT` | `false` starts anyway when a manifest entry fails (download, checksum), skipping it | `true` |
 | **Client / frontend (public side)** | | |
 | `VELOX_FRONTEND_HOSTNAME` | Public hostname or IP clients connect to. Optional; without it clients use `localhost` and the log warns | `localhost` |
 | `VELOX_FRONTEND_PORT` | Public port in the client URL (e.g. `443` behind a proxy or with `-p 443:8000`) | the listen port |
@@ -82,6 +85,7 @@ Public settings only change the URLs written into client configs and the GUI lin
 - `/velociraptor/client.config.yaml` — client config
 - `/velociraptor/client_bundles/` — repacked client binaries (.deb/.rpm/.exe/.msi), world-readable for easy copying
 - `/velociraptor/artifacts/` — optional: your own artifact definitions
+- `/velociraptor/artifacts.yaml` — optional: the artifact manifest (downloads are cached in `/velociraptor/.artifact-cache/`)
 
 ### Configuration ownership modes
 
@@ -175,7 +179,7 @@ docker run -it --rm \
 
 ### 4) Load your own artifacts
 
-Put `*.yaml` artifact definitions in `./velodata/artifacts/` (or mount a directory and set `VELOX_EXTRA_ARTIFACTS_DIR`). They are loaded together with the bundled artifacts on every start; the banner shows how many were found.
+See [Managing artifacts](#managing-artifacts).
 
 ---
 
@@ -250,6 +254,57 @@ Two known upstream lint issues are tolerated at build time, each matched exactly
 
 To bundle more artifacts from the Sigma pack, add `<file in the pack>:<artifact name>` entries to `SIGMA_ARTIFACTS` in `artifacts.lock` (file names as in [`Velociraptor.Sigma.Artifacts.zip`](https://sigma.velocidex.com/)). For anything else, use `./velodata/artifacts/` (see example 4).
 
+### Managing artifacts
+
+The server loads a set of artifact definitions that is **rebuilt on every start** from three sources. A later source replaces an artifact of the same name from an earlier one:
+
+1. **Bundled:** the artifacts listed above.
+2. **Your directory:** every `*.yaml`/`*.yml` in `./velodata/artifacts/` (`VELOX_EXTRA_ARTIFACTS_DIR`).
+3. **The manifest:** artifacts declared in `./velodata/artifacts.yaml` (`VELOX_ARTIFACTS_MANIFEST`), downloaded and verified.
+
+Then everything named under `disable:` (or in `VELOX_DISABLE_ARTIFACTS`) is removed, bundled ones included. Because the set is rebuilt each time, removing a file or a manifest line and restarting removes that artifact.
+
+```yaml
+# ./velodata/artifacts.yaml
+artifacts:
+  # A single definition
+  - url: https://raw.githubusercontent.com/example/artifacts/<commit>/Custom.Windows.Foo.yaml
+    sha256: 4144a5ec6fda351bacace29b17b4a55f830e99fbb296010badf767a2bb31c0ba
+  # A zip pack: take only some of its artifacts (omit `include` to take all)
+  - url: https://example.com/packs/detections-v3.zip
+    sha256: 0c17f2233bb3b81430305c11e659c1f81bb53531e04557aaca5a1ba55f4f0e81
+    include: [Custom.Linux.Bar, Custom.Linux.Baz]
+disable:
+  - Windows.Hayabusa.Monitoring   # bundled, not wanted here
+```
+
+- **Checksums are required.** Get one with `curl -fsSL <url> | sha256sum`. Pin URLs to a commit or release so the checksum stays valid.
+- **Downloads are cached** by checksum in `/velociraptor/.artifact-cache/`, so restarts work offline and don't download again.
+- **A failed entry stops the start** (wrong checksum, download error, or a file that isn't an artifact), so the server never silently runs without something you declared. With `VELOX_ARTIFACTS_STRICT=false` the failing entry is skipped with a warning; the rest of the manifest, including `disable:`, still applies.
+- **The start-up log shows what happened:** what was loaded from each source, what replaced what, and what was disabled. A name in `disable:` that doesn't exist only produces a warning.
+- **Scope:** this manages the artifacts loaded from files. Velociraptor's built-in artifacts can't be disabled this way. Artifacts you create or import in the GUI are stored in the datastore and managed there.
+
+---
+
+## Podman
+
+The image works with Docker and with Podman, rootful or rootless. CI runs the full end-to-end validation under rootless Podman on every pull request.
+
+```bash
+podman run -d --name velociraptor \
+  --health-cmd /usr/local/bin/velox-healthcheck --health-interval 30s \
+  -p 8000:8000 -p 8889:8889 -p 127.0.0.1:8001:8001 -p 127.0.0.1:8003:8003 \
+  -v velodata:/velociraptor \
+  -e VELOX_DEFAULT_PASSWORD='S3cure!' \
+  docker.io/xboarder56/velociraptor:latest
+```
+
+- **Healthcheck:** Podman ignores `HEALTHCHECK` in OCI-format images, so pass `--health-cmd` as above. The repository's `docker-compose.yaml` declares the healthcheck itself, so `podman compose` gets it too.
+- **Rootless:** the container's root is your user, and uid `10001` maps into your subordinate id range. Named volumes just work. For a bind mount, the host directory ends up owned by that subordinate id; use `podman unshare ls -l ./velodata` to look inside, or set `VELOX_RUN_AS_ROOT=true` so files stay owned by your own user (in rootless Podman, the container's root is you).
+- **Don't use `--userns=keep-id` or `--user`.** The entrypoint must start as (namespaced) root to prepare the volume before dropping privileges.
+- **SELinux:** add `:Z` to bind mounts (`-v ./velodata:/velociraptor:Z`).
+- **Ports below 1024:** rootless Podman can't publish them unless the host allows it (`net.ipv4.ip_unprivileged_port_start`); publish a high port instead (`-p 8443:8000`).
+
 ---
 
 ## Security Notes
@@ -301,7 +356,8 @@ To bundle more artifacts from the Sigma pack, add `<file in the pack>:<artifact 
   - Each bump is validated by a `build-publish` dry run on that branch (PRs opened with `GITHUB_TOKEN` get no PR checks). Failures open an issue, and the workflow keeps its own schedule from being disabled.
 - **`build-publish.yml`** builds natively on amd64 and arm64 runners and runs the full validation on both:
   - `scripts/ci-image-validation.sh`: unprivileged server, private config, healthcheck, GUI and GUI API login, all 12 bundled artifacts and an extra one loaded by the running server, all 11 client bundles, `.deb`/`.rpm` installs, a repacked client enrolling and completing a collection, and the musl client on Alpine.
-  - `scripts/ci-config-modes-validation.sh`: config modes, secrets, invalid input, interrupted first start, reverse-proxy URLs, and real upgrades from published `0.76.5` and `0.77.2` images in which an enrolled client keeps its identity.
+  - `scripts/ci-config-modes-validation.sh`: config modes, secrets, invalid input, interrupted first start, reverse-proxy URLs, the artifact manifest (install, include filter, override, disable, removal, offline cache, strict/lenient), and real upgrades from published `0.76.5` and `0.77.2` images in which an enrolled client keeps its identity.
+  - A separate job runs `ci-image-validation.sh` under rootless Podman.
   - Publishing (a `v*` tag, or a manual run with `dry_run` unchecked on `main` or a tag) pushes each architecture by digest, validates that pushed image, and only then creates the multi-arch tags.
 - **`release-tag.yml`** runs when `versions.env` changes on `main`: it tags the merge commit (`v<version>`, or `v<version>-<revision>` for revisions after the first) and starts the release build. Merging a bump PR, or a PR that raises `IMAGE_REVISION`, is all it takes to publish.
 - Dependabot keeps the SHA-pinned actions and the digest-pinned base image current.

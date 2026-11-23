@@ -271,6 +271,7 @@ WORKDIR /velociraptor
 # Small, frequently changing inputs last so the layers above stay cached.
 COPY --chmod=0755 entrypoint /entrypoint
 COPY --chmod=0755 healthcheck /usr/local/bin/velox-healthcheck
+COPY --chmod=0755 artifacts-sync /usr/local/bin/velox-artifacts-sync
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
   CMD ["/usr/local/bin/velox-healthcheck"]
