@@ -57,6 +57,8 @@ VELOX_RUN_AS_ROOT="${VELOX_RUN_AS_ROOT:-false}"
 VELOX_UID="${VELOX_UID:-10001}"
 VELOX_GID="${VELOX_GID:-10001}"
 VELOX_CERT_RENEW_DAYS="${VELOX_CERT_RENEW_DAYS:-30}"
+VELOX_SERVER_PACKAGES="${VELOX_SERVER_PACKAGES:-true}"
+VELOX_SERVER_PACKAGE_ARTIFACTS="${VELOX_SERVER_PACKAGE_ARTIFACTS:-Server.Utils.CreateMSI,Server.Utils.CreateLinuxPackages}"
 
 # Build metadata (injected at build time)
 VELOX_VERSION="${VELOX_VERSION:-unknown}"
@@ -100,6 +102,8 @@ for var_name in \
   VELOX_UID \
   VELOX_GID \
   VELOX_CERT_RENEW_DAYS \
+  VELOX_SERVER_PACKAGES \
+  VELOX_SERVER_PACKAGE_ARTIFACTS \
   VELOX_EXTRA_ARTIFACTS_DIR \
   VELOX_ARTIFACTS_MANIFEST \
   VELOX_ARTIFACTS_STRICT \
@@ -196,6 +200,11 @@ validate_bool() {
 }
 validate_bool VELOX_DEBUG_DISABLED "$VELOX_DEBUG_DISABLED"
 validate_bool VELOX_RUN_AS_ROOT "$VELOX_RUN_AS_ROOT"
+validate_bool VELOX_SERVER_PACKAGES "$VELOX_SERVER_PACKAGES"
+if ! [[ "$VELOX_SERVER_PACKAGE_ARTIFACTS" =~ ^[A-Za-z0-9_.]+(,[A-Za-z0-9_.]+)*$ ]]; then
+  echo "FATAL: VELOX_SERVER_PACKAGE_ARTIFACTS must be comma-separated artifact names, got: '$VELOX_SERVER_PACKAGE_ARTIFACTS'" >&2
+  exit 1
+fi
 
 for _id_var in VELOX_UID VELOX_GID VELOX_CERT_RENEW_DAYS; do
   if ! [[ "${!_id_var}" =~ ^[0-9]+$ ]]; then
@@ -714,6 +723,52 @@ artifact_summary="$(/usr/local/bin/velox-artifacts-sync \
 printf '%s\n' "$artifact_summary"
 chmod -R a+rX "$DEFINITIONS_DIR"
 
+# Client packages in the GUI: once the server is up, a background helper
+# collects VELOX_SERVER_PACKAGE_ARTIFACTS (MSI, deb, rpm) on the server, so
+# the packages can be downloaded from the GUI and used for client upgrades.
+# It runs again only when the client config, the bundled binaries or the
+# artifact list change. It talks to the local API with its own identity
+# (velox-maintenance, kept in /velociraptor/.velox, mode 0600).
+PACKAGES_STATE_FILE="${STATE_HASH_DIR}/server_packages.sha256"
+PACKAGES_API_CONFIG="/velociraptor/.velox/api_client.yaml"
+PACKAGES_RUN=false
+packages_status="disabled (VELOX_SERVER_PACKAGES=false)"
+if [ "${VELOX_SERVER_PACKAGES:-true}" = "true" ]; then
+  packages_want="$(
+    { sha256sum "$CLIENT_CONFIG" | awk '{print $1}'
+      for entry in "${CLIENT_OUTPUTS[@]}"; do
+        IFS='|' read -r _label src _out _mode <<< "$entry"
+        read_sha "${src}.sha256"
+        echo
+      done
+      echo "$VELOX_SERVER_PACKAGE_ARTIFACTS"
+    } | sha256sum | awk '{print $1}')"
+  if [ "$(read_sha "$PACKAGES_STATE_FILE")" = "$packages_want" ]; then
+    packages_status="up to date"
+  else
+    if [ ! -s "$PACKAGES_API_CONFIG" ]; then
+      mkdir -p "$(dirname "$PACKAGES_API_CONFIG")"
+      chmod 0700 "$(dirname "$PACKAGES_API_CONFIG")"
+      # The `api` role is required to use the API at all.
+      "$SERVER_BIN" --config "$CONFIG_FILE" config api_client \
+        --name velox-maintenance --role administrator,api "$PACKAGES_API_CONFIG" >/dev/null
+    fi
+    chmod 0600 "$PACKAGES_API_CONFIG"
+    yq -y -i --arg c "127.0.0.1:$(eff '.API.bind_port // 8001')" '.api_connection_string = $c' "$PACKAGES_API_CONFIG"
+    PACKAGES_RUN=true
+    packages_status="building after start (${VELOX_SERVER_PACKAGE_ARTIFACTS})"
+  fi
+fi
+start_package_helper() {
+  [ "$PACKAGES_RUN" = true ] || return 0
+  # Started from a subshell that exits at once, so the helper is re-parented
+  # to tini (PID 1), which reaps it when it finishes. Its parent would
+  # otherwise be the server process (this shell exec's into it), which
+  # doesn't reap children it didn't start.
+  ( "$@" /usr/local/bin/velox-server-packages "$PACKAGES_API_CONFIG" \
+      "$PACKAGES_STATE_FILE" "$packages_want" "$VELOX_SERVER_PACKAGE_ARTIFACTS" & )
+}
+
 # Start Velociraptor Server
 echo "Velociraptor starting..."
 echo "====================================================="
@@ -736,6 +791,7 @@ echo " Extra Artifacts Dir:        ${EXTRA_ARTIFACTS_DIR}"
 if [ -f "$ARTIFACTS_MANIFEST" ]; then
   echo " Artifacts Manifest:         ${ARTIFACTS_MANIFEST}"
 fi
+echo " GUI Client Packages:        ${packages_status}"
 if [ "$VELOX_RUN_AS_ROOT" = "true" ]; then
   echo " Server Runs As:             root (VELOX_RUN_AS_ROOT=true)"
 else
@@ -750,6 +806,7 @@ if [ "${VELOX_START_SERVER_VERBOSE,,}" = "true" ]; then
 fi
 
 if [ "$VELOX_RUN_AS_ROOT" = "true" ]; then
+  start_package_helper env
   exec "$SERVER_BIN" --config "$SERVER_CONFIG" "${CMD[@]:1}"
 fi
 
@@ -791,4 +848,5 @@ if [ "$privileged_port" = true ]; then
 fi
 
 export HOME=/velociraptor
+start_package_helper setpriv --reuid="$VELOX_UID" --regid="$VELOX_GID" --clear-groups
 exec "${SETPRIV[@]}" "$SERVER_BIN" --config "$SERVER_CONFIG" "${CMD[@]:1}"

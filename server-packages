@@ -1,0 +1,59 @@
+#!/bin/bash
+# Build the client installation packages as a server collection, so they can
+# be downloaded from the GUI (Server Artifacts -> the collection -> Uploaded
+# Files) and used by client-upgrade hunts. Velociraptor's own
+# Frontend.initial_server_artifacts only ever runs on the very first start of
+# a datastore; this runs whenever the client config or the bundled binaries
+# change (the entrypoint decides), so the packages never go stale.
+#
+# Started in the background by the entrypoint, as the server account:
+#   velox-server-packages API_CONFIG STATE_FILE STATE_VALUE ARTIFACT[,ARTIFACT...]
+set -uo pipefail
+
+api_config="$1" state_file="$2" state_value="$3" artifacts="$4"
+server=/opt/velociraptor/linux/velociraptor
+
+log() { printf '[packages] %s\n' "$*"; }
+
+query() {
+  "$server" --api_config "$api_config" query --format jsonl "$1" 2>/dev/null
+}
+
+# Wait for the server's API (first starts can take a while: repacks).
+ready=false
+for _ in $(seq 1 120); do
+  if query 'SELECT 1 AS Ok FROM scope()' | grep -q '"Ok":1'; then
+    ready=true
+    break
+  fi
+  sleep 5
+done
+if [ "$ready" != true ]; then
+  log "WARNING: the server API did not come up; client packages were not built"
+  exit 0
+fi
+
+# Artifact names are validated by the entrypoint ([A-Za-z0-9_.]+).
+list="$(printf '%s' "$artifacts" | tr ',' '\n' | sed '/^$/d; s/.*/"&"/' | paste -sd, -)"
+flow_id="$(query "SELECT collect_client(client_id='server', artifacts=[${list}]).flow_id AS FlowId FROM scope()" \
+  | sed -n 's/.*"FlowId":"\([^"]*\)".*/\1/p' | head -n1)"
+if [ -z "$flow_id" ]; then
+  log "WARNING: could not start the package collection (${artifacts})"
+  exit 0
+fi
+log "building client packages in server collection ${flow_id} (${artifacts})"
+
+state=""
+for _ in $(seq 1 360); do
+  state="$(query "SELECT state FROM flows(client_id='server', flow_id='${flow_id}')" \
+    | sed -n 's/.*"state":"\([^"]*\)".*/\1/p' | head -n1)"
+  case "$state" in FINISHED|ERROR) break ;; esac
+  sleep 5
+done
+
+if [ "$state" = FINISHED ]; then
+  printf '%s' "$state_value" > "$state_file"
+  log "client packages ready: GUI -> Server Artifacts -> ${flow_id} -> Uploaded Files"
+else
+  log "WARNING: package collection ${flow_id} ended in state '${state:-unknown}'; it is retried on the next start"
+fi

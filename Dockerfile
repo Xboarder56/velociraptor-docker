@@ -84,7 +84,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN set -eux; \
     apt-get update; \
     # python3-yaml: used by yq and by velox-artifacts-sync (listed explicitly).
-    apt-get install -y --no-install-recommends ca-certificates curl gzip jq yq openssl python3 python3-yaml; \
+    apt-get install -y --no-install-recommends ca-certificates curl gzip jq yq openssl python3 python3-yaml tini; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --system --gid 10001 velociraptor; \
     useradd --system --uid 10001 --gid 10001 --home-dir /velociraptor \
@@ -278,6 +278,7 @@ WORKDIR /velociraptor
 COPY --chmod=0755 entrypoint /entrypoint
 COPY --chmod=0755 healthcheck /usr/local/bin/velox-healthcheck
 COPY --chmod=0755 artifacts-sync /usr/local/bin/velox-artifacts-sync
+COPY --chmod=0755 server-packages /usr/local/bin/velox-server-packages
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
   CMD ["/usr/local/bin/velox-healthcheck"]
@@ -293,4 +294,6 @@ ENV VELOX_VERSION=${VELOX_VERSION} \
     VELOX_TRIAGE_SOURCE_COMMIT=${TRIAGE_SOURCE_COMMIT} \
     VELOX_SIGMA_SOURCE_COMMIT=${SIGMA_SOURCE_COMMIT}
 
-ENTRYPOINT ["/entrypoint"]
+# tini as PID 1 reaps the entrypoint's background helpers and forwards
+# signals; -s keeps that working under `docker run --init` / compose init.
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/entrypoint"]

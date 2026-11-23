@@ -51,8 +51,8 @@ jobs:
       - name: Shell syntax and shellcheck
         run: |
           set -euo pipefail
-          for f in entrypoint healthcheck scripts/*.sh; do bash -n "$f" 2>/dev/null || sh -n "$f"; done
-          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.10.0 -x -e SC2016 entrypoint healthcheck scripts/*.sh
+          for f in entrypoint healthcheck server-packages scripts/*.sh; do bash -n "$f" 2>/dev/null || sh -n "$f"; done
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.10.0 -x -e SC2016 entrypoint healthcheck server-packages scripts/*.sh
       - name: Python syntax
         run: python3 -m py_compile artifacts-sync && rm -rf __pycache__
       - name: actionlint

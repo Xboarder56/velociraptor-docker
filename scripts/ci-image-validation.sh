@@ -61,6 +61,15 @@ trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# PID of the Velociraptor server process (tini is PID 1).
+server_pid() {
+  docker exec "$1" sh -c 'for p in /proc/[0-9]*; do
+    case "$(tr "\000" " " < "$p/cmdline" 2>/dev/null)" in
+      */velociraptor*" frontend"*) echo "${p#/proc/}"; exit 0 ;;
+    esac
+  done; exit 1'
+}
+
 # GUI / API requests are made from inside the server container (curl and jq
 # are in the image), with a cookie jar for the CSRF-protected POST endpoints.
 GUI="https://127.0.0.1:8889"
@@ -138,8 +147,9 @@ $ready || fail "server did not become ready within ${READY_TIMEOUT_S}s"
 echo "  GUI is serving."
 
 echo "--- Server runs unprivileged and the config is private ---"
-pid1_uid="$(docker exec "$SERVER" awk '/^Uid:/ {print $2}' /proc/1/status)"
-[ "$pid1_uid" = "10001" ] || fail "server runs as uid $pid1_uid, expected 10001"
+pid="$(server_pid "$SERVER")" || fail "no Velociraptor server process found"
+server_uid="$(docker exec "$SERVER" awk '/^Uid:/ {print $2}' "/proc/$pid/status")"
+[ "$server_uid" = "10001" ] || fail "server runs as uid $server_uid, expected 10001"
 config_mode="$(docker exec "$SERVER" stat -c '%a %u' /velociraptor/server.config.yaml)"
 [ "$config_mode" = "600 10001" ] || fail "server.config.yaml is '$config_mode', expected '600 10001'"
 echo "  uid 10001, server.config.yaml 0600"
@@ -275,5 +285,21 @@ done
 rows="$(jq -r '.context.total_collected_rows // 0' <<< "$details")"
 [ "$rows" -gt 0 ] || fail "flow $flow_id returned no rows"
 echo "  $flow_id FINISHED with $rows rows"
+
+echo "--- Client packages are built as a server collection (GUI downloads) ---"
+packages_flow=""
+for _ in $(seq 1 60); do
+  logs="$(docker logs "$SERVER" 2>&1)"
+  if [[ "$logs" == *"[packages] WARNING"* ]]; then
+    fail "package helper reported: $(grep -m1 '\[packages\] WARNING' <<< "$logs")"
+  fi
+  packages_flow="$(sed -n 's/^\[packages\] client packages ready: .* \(F\.[A-Z0-9]*\) .*/\1/p' <<< "$logs" | head -n1)"
+  [ -n "$packages_flow" ] && break
+  sleep 5
+done
+[ -n "$packages_flow" ] || fail "client packages were not built within 5 minutes"
+uploads="$(api_get "/api/v1/GetFlowDetails?client_id=server&flow_id=${packages_flow}" | jq -r '.context.total_uploaded_files // 0')"
+[ "$uploads" -ge 3 ] || fail "package collection $packages_flow uploaded only $uploads files"
+echo "  $packages_flow FINISHED with $uploads uploaded files (MSI, deb, rpm)"
 
 echo "--- Image validation PASSED ---"
