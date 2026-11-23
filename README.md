@@ -349,10 +349,11 @@ podman run -d --name velociraptor \
 
 ## Build & Release Flow
 
-- **`upstream-check.yml`** (daily) polls the Velocidex releases and the official Triage and Sigma artifact projects:
+- **`upstream-check.yml`** (hourly) polls the Velocidex releases and the official Triage and Sigma artifact projects:
   - The image version is the version of the two Linux server binaries. If they differ, or a new release is under 48 hours old and still missing assets, it waits.
   - It refuses to "bump" to an older version, ignores artifact rebuilds that only change an embedded build stamp, and keeps a single bump PR (`upstream-check/bump`) up to date.
   - **Server config changes:** every version bump runs `scripts/config-drift.sh` on the old and new server binaries. It compares the config each release generates, and checks that the new release still loads a config made by the old one (keys, nonces and build stamps are masked). The report goes into the PR description and is committed as `docs/config-drift/<version>.md`. The PR is labeled `config-changes` when settings were added or removed or defaults changed, and `config-incompatible` when the old config no longer loads. Existing installs keep their persisted config, so these are the changes to review for reconcile mode or upgrade notes. Run the same check on demand with the **config-drift** workflow, or locally (see the script header).
+  - **Auto-release (opt-in):** with the repository variable `AUTO_RELEASE_BUMPS=true`, the check waits for the bump's dry run and, if it passes, merges the PR and starts the release. A new upstream version is then published within about an hour and a half. Bumps labeled `config-incompatible` always wait for a person. Turn it off with `gh variable delete AUTO_RELEASE_BUMPS`.
   - Each bump is validated by a `build-publish` dry run on that branch (PRs opened with `GITHUB_TOKEN` get no PR checks). Failures open an issue, and the workflow keeps its own schedule from being disabled.
 - **`build-publish.yml`** first lints (shell syntax, shellcheck, Python syntax, actionlint), then builds natively on amd64 and arm64 runners and runs the full validation on both:
   - `scripts/ci-image-validation.sh`: unprivileged server, private config, healthcheck, GUI and GUI API login, all 12 bundled artifacts and an extra one loaded by the running server, all 11 client bundles, `.deb`/`.rpm` installs, a repacked client enrolling and completing a collection, and the musl client on Alpine.
