@@ -266,16 +266,21 @@ jobs:
         run: |
           set -euo pipefail
           podman --version
-          docker save velociraptor:smoke | podman load
-          mkdir -p "$RUNNER_TEMP/podman-bin"
-          ln -s "$(command -v podman)" "$RUNNER_TEMP/podman-bin/docker"
-          echo "$RUNNER_TEMP/podman-bin" >> "$GITHUB_PATH"
+          docker save velociraptor:smoke -o "$RUNNER_TEMP/smoke.tar"
+          loaded="$(podman load -i "$RUNNER_TEMP/smoke.tar" | sed -n 's/^Loaded image: //p' | head -n1)"
+          podman tag "$loaded" localhost/velociraptor:smoke
+          rm -f "$RUNNER_TEMP/smoke.tar"
+          podman image exists localhost/velociraptor:smoke
 
       - name: Validate image under Podman
         env:
           IMAGE: localhost/velociraptor:smoke
           CLIENT_ARCH: amd64
         run: |
+          # `docker` is podman for this step only (later steps still need Docker).
+          mkdir -p "$RUNNER_TEMP/podman-bin"
+          ln -sf "$(command -v podman)" "$RUNNER_TEMP/podman-bin/docker"
+          export PATH="$RUNNER_TEMP/podman-bin:$PATH"
           docker --version
           ./scripts/ci-image-validation.sh
 
