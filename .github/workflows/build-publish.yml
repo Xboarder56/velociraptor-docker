@@ -276,6 +276,7 @@ jobs:
         env:
           IMAGE: localhost/velociraptor:smoke
           CLIENT_ARCH: amd64
+          CONTAINER_RUNTIME: podman
         run: |
           # `docker` is podman for this step only (later steps still need Docker).
           mkdir -p "$RUNNER_TEMP/podman-bin"

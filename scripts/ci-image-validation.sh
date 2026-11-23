@@ -13,6 +13,7 @@
 #   CLIENT_ARCH        amd64 or arm64: the runner's architecture (default: detected).
 #   READY_TIMEOUT_S    how long to wait for the server to be ready (default 180)
 #   CLIENT_TIMEOUT_S   how long to wait for enrollment / the collection (default 180)
+#   CONTAINER_RUNTIME  set to "podman" when `docker` is Podman (auto-detected otherwise)
 set -euo pipefail
 
 IMAGE="${IMAGE:?IMAGE env var required}"
@@ -99,7 +100,9 @@ chmod 0644 "$WORKDIR/artifacts/ci-extra.yaml"
 
 # Podman ignores HEALTHCHECK in OCI-format images; declare it as compose does.
 HEALTH_ARGS=()
-if docker --version 2>/dev/null | grep -qi podman; then
+# (Through a `docker` shim podman calls itself "docker version", so also
+# honour CONTAINER_RUNTIME=podman and check `docker version`.)
+if [ "${CONTAINER_RUNTIME:-}" = podman ] || docker version 2>/dev/null | grep -qi podman; then
   HEALTH_ARGS=(--health-cmd /usr/local/bin/velox-healthcheck --health-interval 10s --health-start-period 120s)
   echo "  (Podman: passing the healthcheck explicitly)"
 fi
