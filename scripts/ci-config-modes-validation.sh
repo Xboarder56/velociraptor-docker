@@ -543,21 +543,25 @@ assert_log_contains "$MF_RESTART" '[artifacts] cached http://web:8080/pack.zip'
 stop_server "$MF_RESTART"
 
 # A wrong checksum stops the start (strict default) and is skipped when not strict.
-zero_sha="$(printf '%064d' 0)"
+docker rm -f "$MF_WEB" >/dev/null 2>&1 || true
+docker run -d --name "$MF_WEB" --network "$MF_NET" --network-alias web \
+  -v "$MF_WWW:/www:ro" -w /www --entrypoint python3 "$IMAGE" -m http.server 8080 >/dev/null
+# All-"f" rather than all-zero: YAML would read 000... as the number 0.
+wrong_sha="$(printf 'f%.0s' $(seq 1 64))"
 docker run --rm --entrypoint sh -v "$MF_DATA:/velociraptor" "$IMAGE" \
-  -c "sed -i 's/${pack_sha}/${zero_sha}/' /velociraptor/artifacts.yaml"
+  -c "sed -i 's/${pack_sha}/${wrong_sha}/' /velociraptor/artifacts.yaml"
 if docker run --rm --network "$MF_NET" -v "$MF_DATA:/velociraptor" "$IMAGE" \
     >"$TEST_ROOT/manifest-strict.log" 2>&1; then
   fail 'a manifest entry with a wrong checksum did not stop the start'
 fi
-grep -q 'FATAL: manifest' "$TEST_ROOT/manifest-strict.log" || fail 'strict manifest failure was not reported'
+grep -q 'FATAL: manifest.*sha256 mismatch' "$TEST_ROOT/manifest-strict.log" || fail 'strict manifest checksum failure was not reported'
 MF_LENIENT="velo-config-manifest-lenient-$SUFFIX"
 start_server "$MF_LENIENT" "$MF_DATA" --network "$MF_NET" \
   -e VELOX_ARTIFACTS_STRICT=false -e VELOX_START_SERVER_VERBOSE=false
 # Only the failing entry is skipped; the manifest's disable list still applies.
 expect_artifact "$MF_LENIENT" Custom.Zip.Keep absent
 expect_artifact "$MF_LENIENT" Windows.Hayabusa.Monitoring absent
-assert_log_contains "$MF_LENIENT" 'WARNING: skipping manifest entry
+assert_log_contains "$MF_LENIENT" 'WARNING: skipping manifest entry'
 stop_server "$MF_LENIENT"
 
 echo "Config mode and secret-file validation: PASS"

@@ -174,7 +174,13 @@ done
 echo "--- Container healthcheck turns healthy ---"
 health=""
 for _ in $(seq 1 30); do
-  health="$(docker inspect -f '{{.State.Health.Status}}' "$SERVER")"
+  if [ "${#HEALTH_ARGS[@]}" -gt 0 ]; then
+    # Podman runs healthchecks from systemd timers, which CI runners (no
+    # user session) lack: run the configured check directly.
+    if docker healthcheck run "$SERVER" >/dev/null 2>&1; then health=healthy; fi
+  else
+    health="$(docker inspect -f '{{.State.Health.Status}}' "$SERVER")"
+  fi
   [ "$health" = healthy ] && break
   sleep 5
 done
