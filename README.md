@@ -364,6 +364,8 @@ podman run -d --name velociraptor \
 
 Required repository secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`.
 
+To test the whole release path without releasing (for example after updating the workflow actions), run **release-tag** with `rehearsal` checked, or `gh workflow run release-tag.yml -f rehearsal=true`. It pushes and deletes a throwaway git tag, then runs build-publish end to end: the Docker Hub login, both architectures pushed by digest and validated, the digest hand-off and the multi-arch merge. The only tag it writes is `:rehearsal`, which users don't pull.
+
 Build locally from the pinned lockfiles:
 
 ```bash

@@ -9,6 +9,9 @@ name: build-publish
 #   workflow_dispatch              build + validate; publishes only when
 #                                  dry_run is unchecked AND the ref is main
 #                                  or a v* tag (release-tag.yml uses this)
+#   workflow_dispatch + rehearsal  the full publish path on main, but the only
+#                                  tag written is :rehearsal (release-tag.yml
+#                                  `rehearsal` runs this after a tag-push test)
 
 on:
   push:
@@ -25,6 +28,10 @@ on:
         description: "Build + validate only, do not push"
         type: boolean
         default: true
+      rehearsal:
+        description: "Run the whole publish path but only write the :rehearsal tag (main only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -96,11 +103,19 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           DRY_RUN: ${{ inputs.dry_run }}
+          REHEARSAL: ${{ inputs.rehearsal }}
           VELOX_VERSION: ${{ steps.vars.outputs.velox_version }}
           IMAGE_REVISION: ${{ steps.vars.outputs.image_revision }}
         run: |
           set -euo pipefail
           publish=false
+          if [ "$REHEARSAL" = "true" ]; then
+            if [ "$EVENT" != "workflow_dispatch" ] || [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::A rehearsal runs from main via workflow_dispatch (got $EVENT on $GITHUB_REF)."
+              exit 1
+            fi
+            DRY_RUN=false
+          fi
           case "$EVENT" in
             push)
               [[ "$GITHUB_REF" == refs/tags/* ]] && publish=true ;;
@@ -145,6 +160,10 @@ jobs:
           )
           if [ "$bare" = "$newest_minor" ]; then tags+=("${IMAGE}:${minor}"); fi
           if [ "$bare" = "$newest" ]; then tags+=("${IMAGE}:latest"); fi
+          if [ "$REHEARSAL" = "true" ]; then
+            # Exercise everything, touch nothing users pull.
+            tags=("${IMAGE}:rehearsal")
+          fi
 
           echo "publish=${publish}" >> "$GITHUB_OUTPUT"
           echo "tags=${tags[*]}" >> "$GITHUB_OUTPUT"
