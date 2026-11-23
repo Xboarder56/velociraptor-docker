@@ -10,7 +10,7 @@
 services:
   velociraptor:
     # Pin to a specific image for reproducibility. `0.77.3` follows image
-    # revisions of that release; `0.77.3-3` never changes. Switch to `:latest`
+    # revisions of that release; `0.77.3-5` never changes. Switch to `:latest`
     # if you'd rather always run the newest build.
     image: docker.io/xboarder56/velociraptor:0.77.3
     restart: unless-stopped
@@ -37,11 +37,18 @@ services:
     # size this to your deployment instead of letting it take the whole host.
     mem_limit: ${VELOX_MEM_LIMIT:-4g}
 
-    # The image's HEALTHCHECK probes the GUI listener; `docker compose ps`
-    # shows the result.
+    # Probes the GUI listener the server actually uses. Declared here as well
+    # as in the image because Podman ignores HEALTHCHECK in OCI-format images.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/velox-healthcheck"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
 
     # Persist config, keys, data, and repacked client bundles.
-    # Extra artifact packs: drop *.yaml files into ./velodata/artifacts.
+    # Extra artifacts: drop *.yaml files into ./velodata/artifacts, or declare
+    # them (and disable bundled ones) in ./velodata/artifacts.yaml.
     volumes:
       - ./velodata:/velociraptor
 

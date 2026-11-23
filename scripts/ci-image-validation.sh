@@ -13,6 +13,7 @@
 #   CLIENT_ARCH        amd64 or arm64: the runner's architecture (default: detected).
 #   READY_TIMEOUT_S    how long to wait for the server to be ready (default 180)
 #   CLIENT_TIMEOUT_S   how long to wait for enrollment / the collection (default 180)
+#   CONTAINER_RUNTIME  set to "podman" when `docker` is Podman (auto-detected otherwise)
 set -euo pipefail
 
 IMAGE="${IMAGE:?IMAGE env var required}"
@@ -26,10 +27,11 @@ CLIENT_ARCH="${CLIENT_ARCH:-$detected_arch}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-180}"
 CLIENT_TIMEOUT_S="${CLIENT_TIMEOUT_S:-180}"
 PASSWORD="smoke-test-password"
-# Helper images, pinned by digest (Dependabot does not track these; bump by hand).
-UBUNTU_IMAGE="ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db"
-ALPINE_IMAGE="alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f"
-FEDORA_IMAGE="fedora:43@sha256:f01112b9a1f1d0504ad962d9adfa401425033f8ab067e0a821904ebdde5b8ca5"
+# Helper images, fully qualified (Podman does not guess registries) and pinned
+# by digest (Dependabot does not track these; bump by hand).
+UBUNTU_IMAGE="docker.io/library/ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db"
+ALPINE_IMAGE="docker.io/library/alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f"
+FEDORA_IMAGE="docker.io/library/fedora:43@sha256:f01112b9a1f1d0504ad962d9adfa401425033f8ab067e0a821904ebdde5b8ca5"
 
 case "$CLIENT_ARCH" in
   amd64|arm64) ;;
@@ -96,8 +98,17 @@ sources:
 EOF
 chmod 0644 "$WORKDIR/artifacts/ci-extra.yaml"
 
+# Podman ignores HEALTHCHECK in OCI-format images; declare it as compose does.
+HEALTH_ARGS=()
+# (Through a `docker` shim podman calls itself "docker version", so also
+# honour CONTAINER_RUNTIME=podman and check `docker version`.)
+if [ "${CONTAINER_RUNTIME:-}" = podman ] || docker version 2>/dev/null | grep -qi podman; then
+  HEALTH_ARGS=(--health-cmd /usr/local/bin/velox-healthcheck --health-interval 10s --health-start-period 120s)
+  echo "  (Podman: passing the healthcheck explicitly)"
+fi
+
 echo "--- Start server ($SERVER) ---"
-docker run -d \
+docker run -d ${HEALTH_ARGS[@]+"${HEALTH_ARGS[@]}"} \
   --name "$SERVER" \
   --network "$NET" \
   --network-alias velociraptor \
@@ -166,7 +177,13 @@ done
 echo "--- Container healthcheck turns healthy ---"
 health=""
 for _ in $(seq 1 30); do
-  health="$(docker inspect -f '{{.State.Health.Status}}' "$SERVER")"
+  if [ "${#HEALTH_ARGS[@]}" -gt 0 ]; then
+    # Podman runs healthchecks from systemd timers, which CI runners (no
+    # user session) lack: run the configured check directly.
+    if docker healthcheck run "$SERVER" >/dev/null 2>&1; then health=healthy; fi
+  else
+    health="$(docker inspect -f '{{.State.Health.Status}}' "$SERVER")"
+  fi
   [ "$health" = healthy ] && break
   sleep 5
 done
