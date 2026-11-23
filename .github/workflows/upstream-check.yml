@@ -17,15 +17,22 @@ name: upstream-check
 
 on:
   schedule:
-    # Daily at 13:00 UTC. Velocidex ships on the order of weeks; once a
-    # day is plenty without burning runner minutes.
-    - cron: "0 13 * * *"
+    # Hourly (at :17, away from the top-of-the-hour rush), so a Velocidex
+    # release reaches a bump PR within about an hour. Steady-state runs are a
+    # few API calls: binaries are only downloaded when their pin changes.
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       force_revision_bump:
         description: "Bump IMAGE_REVISION even if nothing changed"
         type: boolean
         default: false
+
+# One check at a time: an auto-release run can wait on its dry run for a
+# while, and the next hourly run must not rewrite the bump branch meanwhile.
+concurrency:
+  group: upstream-check
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -35,7 +42,8 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     env:
       UPSTREAM_REPO: Velocidex/velociraptor
       TRIAGE_REPO: Velocidex/velociraptor-triage-collector
@@ -106,8 +114,17 @@ jobs:
             echo "  $key -> $ver ($url)"
           done
 
-          # Compute sha256s for each pinned asset (download to /tmp).
+          # Compute sha256s for each pinned asset. An asset whose URL and GitHub
+          # digest match the current pin keeps its pinned sha256 (it was
+          # downloaded and verified when it was pinned); anything new is
+          # downloaded and checked against GitHub's digest.
           for key in $ASSET_KEYS; do
+            pinned_url="$(sed -n "s/^${key}_URL=//p" binaries.lock)"
+            pinned_sha="$(sed -n "s/^${key}_SHA256=//p" binaries.lock)"
+            if [ "${URL[$key]}" = "$pinned_url" ] && [ -n "${DIGEST[$key]}" ] && [ "${DIGEST[$key]}" = "$pinned_sha" ]; then
+              SHA256[$key]="$pinned_sha"
+              continue
+            fi
             tmp="$(mktemp)"
             curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "${URL[$key]}"
             SHA256[$key]="$(sha256sum "$tmp" | awk '{print $1}')"
@@ -431,13 +448,47 @@ jobs:
           delete-branch: true
 
       - name: Build and validate the bump branch
+        id: dryrun
         if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
         env:
           PR_URL: ${{ steps.pr.outputs.pull-request-url }}
         run: |
           set -euo pipefail
+          started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run build-publish.yml --ref upstream-check/bump -f dry_run=true
-          gh pr comment "$PR_URL" --body "Started a \`build-publish\` dry run on \`upstream-check/bump\` ($(date -u +%Y-%m-%dT%H:%MZ)). Merge once it is green."
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(gh run list --workflow build-publish.yml --branch upstream-check/bump \
+              --event workflow_dispatch --limit 5 --json databaseId,createdAt \
+              --jq "[.[] | select(.createdAt >= \"$started\")][0].databaseId // empty")"
+            [ -n "$run_id" ] && break
+            sleep 10
+          done
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          gh pr comment "$PR_URL" --body "Started a \`build-publish\` dry run on \`upstream-check/bump\` ($started): ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${run_id}. Merge once it is green."
+
+      # Near-real-time patching (repo variable AUTO_RELEASE_BUMPS=true): wait
+      # for the dry run, then merge and release. Bumps whose new release can't
+      # load an existing config (label config-incompatible) still wait for a
+      # person. Merges made with GITHUB_TOKEN don't trigger workflows, so the
+      # release is started explicitly.
+      - name: Auto-release when the dry run passes
+        if: vars.AUTO_RELEASE_BUMPS == 'true' && steps.dryrun.outputs.run_id != '' && !contains(steps.drift.outputs.labels, 'config-incompatible')
+        env:
+          PR_URL: ${{ steps.pr.outputs.pull-request-url }}
+          RUN_ID: ${{ steps.dryrun.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          gh run watch "$RUN_ID" --interval 60 >/dev/null 2>&1 || true
+          conclusion="$(gh run view "$RUN_ID" --json conclusion --jq .conclusion)"
+          if [ "$conclusion" != success ]; then
+            gh pr comment "$PR_URL" --body "Auto-release skipped: the dry run ended with \`$conclusion\`."
+            echo "::warning::Dry run $RUN_ID: $conclusion; leaving the bump PR for review."
+            exit 0
+          fi
+          gh pr merge "$PR_URL" --merge
+          gh workflow run release-tag.yml --ref main
+          echo "### Auto-released: merged $PR_URL and started release-tag" >> "$GITHUB_STEP_SUMMARY"
 
       # GitHub disables scheduled workflows after 60 days without repository
       # activity; re-enabling resets that timer.
@@ -454,7 +505,11 @@ jobs:
           title="upstream-check is failing"
           existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "Still failing: $RUN_URL"
+            # Hourly schedule: add at most one "still failing" comment a day.
+            last="$(gh issue view "$existing" --json comments,createdAt --jq '(.comments | last | .createdAt) // .createdAt')"
+            if [ $(( $(date +%s) - $(date -d "$last" +%s) )) -ge 86400 ]; then
+              gh issue comment "$existing" --body "Still failing: $RUN_URL"
+            fi
           else
             gh issue create --title "$title" --body "The scheduled upstream check failed: $RUN_URL"
           fi
