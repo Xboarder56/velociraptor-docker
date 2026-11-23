@@ -44,7 +44,7 @@ jobs:
       # Order matters only for printing.
       ASSET_KEYS: "LINUX_AMD64 LINUX_ARM64 LINUX_AMD64_MUSL DARWIN_AMD64 DARWIN_ARM64 WINDOWS_EXE WINDOWS_MSI"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Resolve per-asset latest patches and sha256s
         id: resolve
@@ -402,7 +402,7 @@ jobs:
       - name: Open or update the bump PR
         id: pr
         if: steps.decide.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           # One branch for every bump: a newer upstream release updates the
           # open PR instead of leaving a superseded one behind.
