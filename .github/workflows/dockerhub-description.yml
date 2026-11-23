@@ -1,0 +1,40 @@
+name: dockerhub-description
+
+# Keep the Docker Hub page in sync with DOCKERHUB.md. The GitHub README is
+# longer than Docker Hub's 25,000-byte limit, so Hub gets this shorter page
+# that links to the full README.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - DOCKERHUB.md
+      - .github/workflows/dockerhub-description.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the Docker Hub limits
+        run: |
+          set -euo pipefail
+          bytes="$(wc -c < DOCKERHUB.md)"
+          echo "DOCKERHUB.md: ${bytes} bytes (limit 25000)"
+          [ "$bytes" -le 25000 ]
+
+      # Needs a Docker Hub token with read/write/delete scope.
+      - name: Update the Docker Hub description
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: xboarder56/velociraptor
+          readme-filepath: ./DOCKERHUB.md
+          short-description: "Velociraptor DFIR server: client repacks, Triage/Sigma/Hayabusa artifacts, amd64+arm64"
