@@ -280,7 +280,7 @@ disable:
 
 - **Checksums are required.** Get one with `curl -fsSL <url> | sha256sum`. Pin URLs to a commit or release so the checksum stays valid.
 - **Downloads are cached** by checksum in `/velociraptor/.artifact-cache/`, so restarts work offline and don't download again.
-- **A failed entry stops the start** (wrong checksum, download error, or a file that isn't an artifact), so the server never silently runs without something you declared. With `VELOX_ARTIFACTS_STRICT=false` the failing entry is skipped with a warning; the rest of the manifest, including `disable:`, still applies.
+- **A failed entry stops the start** (wrong checksum, download error, or a file that isn't an artifact), so the server never silently runs without something you declared. With `VELOX_ARTIFACTS_STRICT=false` a failing entry is skipped with a warning and the rest of the manifest, including `disable:`, still applies (unknown top-level keys are also just warned about). A manifest that isn't valid YAML can't be read at all: strict stops the start, lenient starts without it.
 - **The start-up log shows what happened:** what was loaded from each source, what replaced what, and what was disabled. A name in `disable:` that doesn't exist only produces a warning.
 - **Scope:** this manages the artifacts loaded from files. Velociraptor's built-in artifacts can't be disabled this way. Artifacts you create or import in the GUI are stored in the datastore and managed there.
 
@@ -288,7 +288,7 @@ disable:
 
 ## Podman
 
-The image works with Docker and with Podman, rootful or rootless. CI runs the full end-to-end validation under rootless Podman on every pull request.
+The image works with Docker and with Podman, rootful or rootless. CI runs the end-to-end image validation (`ci-image-validation.sh`) under rootless Podman for every pull request and push to `main`.
 
 ```bash
 podman run -d --name velociraptor \
@@ -340,7 +340,7 @@ podman run -d --name velociraptor \
 
 - `:latest` — the newest Velociraptor version released here (never moves back to an older version)
 - `:<velociraptor-version>` — e.g. `:0.77.3`. Follows image revisions of that upstream release.
-- `:<velociraptor-version>-<revision>` — e.g. `:0.77.3-3`. Never changes once published.
+- `:<velociraptor-version>-<revision>` — e.g. `:0.77.3-5`. Never changes once published.
 - `:<minor>` — e.g. `:0.77`. The newest patch of that minor line.
 - `:sha-<short>` — the commit the image was built from.
 - Multi-arch manifests are published for **amd64** and **arm64**
@@ -354,9 +354,9 @@ podman run -d --name velociraptor \
   - It refuses to "bump" to an older version, ignores artifact rebuilds that only change an embedded build stamp, and keeps a single bump PR (`upstream-check/bump`) up to date.
   - **Server config changes:** every version bump runs `scripts/config-drift.sh` on the old and new server binaries. It compares the config each release generates, and checks that the new release still loads a config made by the old one (keys, nonces and build stamps are masked). The report goes into the PR description and is committed as `docs/config-drift/<version>.md`. The PR is labeled `config-changes` when settings were added or removed or defaults changed, and `config-incompatible` when the old config no longer loads. Existing installs keep their persisted config, so these are the changes to review for reconcile mode or upgrade notes. Run the same check on demand with the **config-drift** workflow, or locally (see the script header).
   - Each bump is validated by a `build-publish` dry run on that branch (PRs opened with `GITHUB_TOKEN` get no PR checks). Failures open an issue, and the workflow keeps its own schedule from being disabled.
-- **`build-publish.yml`** builds natively on amd64 and arm64 runners and runs the full validation on both:
+- **`build-publish.yml`** first lints (shell syntax, shellcheck, Python syntax, actionlint), then builds natively on amd64 and arm64 runners and runs the full validation on both:
   - `scripts/ci-image-validation.sh`: unprivileged server, private config, healthcheck, GUI and GUI API login, all 12 bundled artifacts and an extra one loaded by the running server, all 11 client bundles, `.deb`/`.rpm` installs, a repacked client enrolling and completing a collection, and the musl client on Alpine.
-  - `scripts/ci-config-modes-validation.sh`: config modes, secrets, invalid input, interrupted first start, reverse-proxy URLs, the artifact manifest (install, include filter, override, disable, removal, offline cache, strict/lenient), and real upgrades from published `0.76.5` and `0.77.2` images in which an enrolled client keeps its identity.
+  - `scripts/ci-config-modes-validation.sh`: config modes, secrets, invalid input, interrupted first start, reverse-proxy URLs, the artifact manifest (install, include filter, override, disable, removal, offline cache, strict/lenient), and real upgrades from published `0.76.5`, `0.77.2` and `0.77.3-4` images in which an enrolled client keeps its identity.
   - A separate job runs `ci-image-validation.sh` under rootless Podman.
   - Publishing (a `v*` tag, or a manual run with `dry_run` unchecked on `main` or a tag) pushes each architecture by digest, validates that pushed image, and only then creates the multi-arch tags.
 - **`release-tag.yml`** runs when `versions.env` changes on `main`: it tags the merge commit (`v<version>`, or `v<version>-<revision>` for revisions after the first) and starts the release build. Merging a bump PR, or a PR that raises `IMAGE_REVISION`, is all it takes to publish.

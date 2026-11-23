@@ -10,7 +10,7 @@
 services:
   velociraptor:
     # Pin to a specific image for reproducibility. `0.77.3` follows image
-    # revisions of that release; `0.77.3-3` never changes. Switch to `:latest`
+    # revisions of that release; `0.77.3-5` never changes. Switch to `:latest`
     # if you'd rather always run the newest build.
     image: docker.io/xboarder56/velociraptor:0.77.3
     restart: unless-stopped

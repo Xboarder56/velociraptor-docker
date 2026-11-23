@@ -33,3 +33,5 @@ pki/
 
 # Ignore Docker Desktop’s extra metadata
 .docker/
+__pycache__/
+*.pyc

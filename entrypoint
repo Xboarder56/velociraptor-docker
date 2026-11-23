@@ -99,11 +99,17 @@ for var_name in \
   VELOX_RUN_AS_ROOT \
   VELOX_UID \
   VELOX_GID \
-  VELOX_CERT_RENEW_DAYS
+  VELOX_CERT_RENEW_DAYS \
+  VELOX_EXTRA_ARTIFACTS_DIR \
+  VELOX_ARTIFACTS_MANIFEST \
+  VELOX_ARTIFACTS_STRICT \
+  VELOX_DISABLE_ARTIFACTS
 do
   printf -v "$var_name" '%s' "$(strip_quotes "${!var_name}")"
   export "${var_name?}"
 done
+
+EXTRA_ARTIFACTS_DIR="${VELOX_EXTRA_ARTIFACTS_DIR:-/velociraptor/artifacts}"
 
 VELOX_CONFIG_MODE="${VELOX_CONFIG_MODE,,}"
 case "$VELOX_CONFIG_MODE" in
@@ -691,8 +697,9 @@ chmod -R a+rX "$CLIENT_DIR"
 # artifact. See artifacts-sync for the manifest format.
 DEFINITIONS_DIR="$RUNTIME_DIR/definitions"
 ARTIFACTS_MANIFEST="${VELOX_ARTIFACTS_MANIFEST:-/velociraptor/artifacts.yaml}"
+VELOX_ARTIFACTS_STRICT="${VELOX_ARTIFACTS_STRICT,,}"
 case "${VELOX_ARTIFACTS_STRICT:-true}" in
-  true|TRUE|True|false|FALSE|False) ;;
+  true|false) ;;
   *) echo "FATAL: VELOX_ARTIFACTS_STRICT must be 'true' or 'false', got: '${VELOX_ARTIFACTS_STRICT}'" >&2; exit 1 ;;
 esac
 artifact_summary="$(/usr/local/bin/velox-artifacts-sync \
@@ -702,7 +709,8 @@ artifact_summary="$(/usr/local/bin/velox-artifacts-sync \
   --disable "${VELOX_DISABLE_ARTIFACTS:-}" \
   --cache /velociraptor/.artifact-cache \
   --out "$DEFINITIONS_DIR" \
-  --strict "${VELOX_ARTIFACTS_STRICT:-true}")"
+  --strict "${VELOX_ARTIFACTS_STRICT:-true}" \
+  --manifest-explicit "$([ -n "${VELOX_ARTIFACTS_MANIFEST:-}" ] && echo true || echo false)")"
 printf '%s\n' "$artifact_summary"
 chmod -R a+rX "$DEFINITIONS_DIR"
 

@@ -83,7 +83,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Package tooling is not needed: Velociraptor builds .deb/.rpm itself.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl gzip jq yq openssl; \
+    # python3-yaml: used by yq and by velox-artifacts-sync (listed explicitly).
+    apt-get install -y --no-install-recommends ca-certificates curl gzip jq yq openssl python3 python3-yaml; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --system --gid 10001 velociraptor; \
     useradd --system --uid 10001 --gid 10001 --home-dir /velociraptor \

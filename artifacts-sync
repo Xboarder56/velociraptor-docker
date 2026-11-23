@@ -31,6 +31,7 @@ import sys
 import tempfile
 import urllib.request
 import zipfile
+import zlib
 
 import yaml
 
@@ -144,7 +145,10 @@ def manifest_entry(index, item, cache_dir):
         wanted = set(include or [])
         taken = set()
         for member in members:
-            text = archive.read(member)
+            try:
+                text = archive.read(member)
+            except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, OSError) as exc:
+                raise ManifestError(f"{url}: cannot read {member} from the zip ({exc})")
             try:
                 name = artifact_name(text, f"{url}!{member}")
             except ManifestError:
@@ -175,6 +179,7 @@ def main():
     ap.add_argument("--cache", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--strict", default="true")
+    ap.add_argument("--manifest-explicit", default="false")
     args = ap.parse_args()
     strict = args.strict.lower() != "false"
 
@@ -197,6 +202,8 @@ def main():
             log(f"WARNING: skipping {exc}")
 
     disable = set(n for n in re.split(r"[,\s]+", args.disable) if n)
+    if args.manifest and not os.path.isfile(args.manifest) and args.manifest_explicit == "true":
+        log(f"WARNING: VELOX_ARTIFACTS_MANIFEST={args.manifest} does not exist; no manifest applied")
     if args.manifest and os.path.isfile(args.manifest):
         try:
             with open(args.manifest, "rb") as fh:
@@ -205,7 +212,10 @@ def main():
                 raise ManifestError("the manifest must be a mapping with `artifacts:` and/or `disable:`")
             unknown = set(manifest) - {"artifacts", "disable"}
             if unknown:
-                raise ManifestError(f"unknown manifest keys: {', '.join(sorted(unknown))}")
+                msg = f"unknown manifest keys: {', '.join(sorted(unknown))} (expected artifacts:, disable:)"
+                if strict:
+                    raise ManifestError(msg)
+                log(f"WARNING: {msg}; ignoring them (VELOX_ARTIFACTS_STRICT=false)")
             listed = manifest.get("disable") or []
             if not isinstance(listed, list) or not all(isinstance(n, str) for n in listed):
                 raise ManifestError("`disable:` must be a list of artifact names")

@@ -39,9 +39,27 @@ env:
   LEGACY_IMAGES: >-
     docker.io/xboarder56/velociraptor:0.76.5@sha256:1f7d6a4b3785d5ec5e2b49b83029612f12181bdd410e00f17d120bccda84dfe6
     docker.io/xboarder56/velociraptor:0.77.2@sha256:231bb2e69458fc5990557c0d713a2f1a8a29d2dcedc54da55a9394e699e4af8d
+    docker.io/xboarder56/velociraptor:0.77.3-4@sha256:967ad03dbb605da373d0f8b62d33054eeffc8b6d5fd207730abf0ad58ab0fee4
 
 jobs:
+  # Cheap checks first: a syntax error in a test script must never reach a
+  # release (the release build runs the same scripts).
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Shell syntax and shellcheck
+        run: |
+          set -euo pipefail
+          for f in entrypoint healthcheck scripts/*.sh; do bash -n "$f" 2>/dev/null || sh -n "$f"; done
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.10.0 -x -e SC2016 entrypoint healthcheck scripts/*.sh
+      - name: Python syntax
+        run: python3 -m py_compile artifacts-sync && rm -rf __pycache__
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -no-color
+
   prepare:
+    needs: lint
     runs-on: ubuntu-24.04
     outputs:
       build_args: ${{ steps.vars.outputs.build_args }}
