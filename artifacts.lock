@@ -4,11 +4,11 @@
 # GitHub Pages branch. URLs contain an immutable commit and every definition
 # is verified during the image build.
 
-TRIAGE_SOURCE_COMMIT=374a4cea58ff0005c54bd88ca398a5c5797a7d88
-TRIAGE_LINUX_UAC_URL=https://raw.githubusercontent.com/Velocidex/velociraptor-triage-collector/374a4cea58ff0005c54bd88ca398a5c5797a7d88/docs/linux.triage.uac/Linux.Triage.UAC.yaml
-TRIAGE_LINUX_UAC_SHA256=4e98f194cc20a0ccaa8f86aa5090de1bb78cbc4010ed7cf53c475f3139064120
-TRIAGE_WINDOWS_TARGETS_URL=https://raw.githubusercontent.com/Velocidex/velociraptor-triage-collector/374a4cea58ff0005c54bd88ca398a5c5797a7d88/docs/windows.triage.targets/Windows.Triage.Targets.yaml
-TRIAGE_WINDOWS_TARGETS_SHA256=6f96697295bfedf07afa6cadaa1736cab0a2db9385083b12a87971c3cb92ed1f
+TRIAGE_SOURCE_COMMIT=c168c48d1ed3313da9543ceea0d70c101194fe83
+TRIAGE_LINUX_UAC_URL=https://raw.githubusercontent.com/Velocidex/velociraptor-triage-collector/c168c48d1ed3313da9543ceea0d70c101194fe83/docs/linux.triage.uac/Linux.Triage.UAC.yaml
+TRIAGE_LINUX_UAC_SHA256=f05eea5044ae0b50a2ecc6aa09a8ea45af5da3d1b72d676bc942d9b5e2c424fe
+TRIAGE_WINDOWS_TARGETS_URL=https://raw.githubusercontent.com/Velocidex/velociraptor-triage-collector/c168c48d1ed3313da9543ceea0d70c101194fe83/docs/windows.triage.targets/Windows.Triage.Targets.yaml
+TRIAGE_WINDOWS_TARGETS_SHA256=832b00bd3a1f4646b127f359091e3d0c4da8bf8fde38bae7ece7239d10293612
 
 # Velocidex Sigma / Hayabusa artifact pack (gh-pages build of
 # Velocidex/velociraptor-sigma-rules), pinned to an immutable commit. The
